@@ -1,67 +1,100 @@
-"""Executable demo for the task ledger and executor."""
+r"""Executable demo: run a diamond DAG of tasks on top of ThreadPoolExecutor.
 
-import threading
+Graph:
+
+        A
+       / \
+      B   C       (B and C run in parallel once A finishes)
+       \ /
+        D        (D runs once both B and C finish)
+
+No new SDK abstractions. The DAG lives entirely in the consumer:
+  * ThreadPoolExecutor provides bounded concurrency.
+  * Future.add_done_callback handles "submit dependents when ready".
+  * A small lock guards the shared futures dict and the readiness check.
+"""
+
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event, RLock
 
-from executor import TaskCancelled, default_executor
+from executor import default_executor
 from ledger import TaskLedger
-from task import Task, TaskStatus, TaskType
+from task import Task, TaskType
 
 
-def main():
-    """Run a small end-to-end demo of create, execute, cancel, and delete."""
+def main() -> None:
+    """Build a diamond DAG, run it, print arrival times."""
     ledger = TaskLedger()
     executor = default_executor()
 
-    # Create/read/list a task.
-    task = Task(
-        title="List files",
-        description="Demo successful bash execution",
-        type=TaskType.BASH,
-        payload="ls -all",
-    )
-    ledger[task.id] = task
+    # One-second sleeps make the parallelism obvious in the timestamps.
+    a = Task(title="A", type=TaskType.BASH, payload="sleep 1; echo A done")
+    b = Task(title="B", type=TaskType.BASH, payload="sleep 1; echo B done")
+    c = Task(title="C", type=TaskType.BASH, payload="sleep 1; echo C done")
+    d = Task(title="D", type=TaskType.BASH, payload="sleep 1; echo D done")
+    tasks: dict[str, Task] = {t.id: t for t in (a, b, c, d)}
+    for t in tasks.values():
+        ledger[t.id] = t
 
-    print(ledger[task.id])
-    print(list(ledger))
+    # The DAG itself: task_id -> list of upstream task_ids it depends on.
+    deps: dict[str, list[str]] = {
+        a.id: [],
+        b.id: [a.id],
+        c.id: [a.id],
+        d.id: [b.id, c.id],
+    }
 
-    # Execute moves PENDING -> RUNNING -> DONE.
-    result = executor.execute(task)
-    print(result.output)
-    print(task)
+    futures: dict[str, Future] = {}
+    lock = RLock()
+    done = Event()
+    start = time.monotonic()
 
-    # Cancel a task before it starts: PENDING -> CANCELLED.
-    skipped = Task(title="Skip task", type=TaskType.BASH, payload="sleep 10")
-    ledger[skipped.id] = skipped
-    ledger.cancel(skipped.id)
-    print(skipped)
+    def stamp() -> str:
+        return f"[{time.monotonic() - start:5.2f}s]"
 
-    # Cancel a task while it is running: RUNNING -> CANCELLED.
-    long_running = Task(title="Long running", type=TaskType.BASH, payload="sleep 30")
-    ledger[long_running.id] = long_running
+    def submit(task_id: str, pool: ThreadPoolExecutor) -> None:
+        """Schedule one task and register its done-callback."""
+        task = tasks[task_id]
+        print(f"{stamp()} submit  {task.title}")
+        fut = pool.submit(executor.execute, task)
+        futures[task_id] = fut
+        fut.add_done_callback(lambda f, tid=task_id: on_finish(tid, f, pool))
 
-    def run_long_task() -> None:
-        """Execute the long task and report expected cancellation."""
-        try:
-            executor.execute(long_running)
-        except TaskCancelled:
-            print(f"Cancelled in-flight task: {long_running}")
+    def ready(task_id: str) -> bool:
+        """Return True if every dep has completed successfully."""
+        return all(
+            d in futures and futures[d].done() and futures[d].exception() is None
+            for d in deps[task_id]
+        )
 
-    thread = threading.Thread(target=run_long_task)
-    thread.start()
+    def on_finish(task_id: str, fut: Future, pool: ThreadPoolExecutor) -> None:
+        """Print arrival, submit any newly-unblocked dependents, signal done."""
+        title = tasks[task_id].title
+        err = fut.exception()
+        if err is not None:
+            print(f"{stamp()} fail    {title}: {err}")
+        else:
+            print(f"{stamp()} finish  {title}")
 
-    # Wait until the subprocess is actually tracked before cancelling it.
-    while not (
-        long_running.status == TaskStatus.RUNNING
-        and executor.is_running(long_running.id)
-    ):
-        time.sleep(0.01)
+        with lock:
+            for dependent_id, dep_list in deps.items():
+                if dependent_id in futures:
+                    continue
+                if dep_list and ready(dependent_id):
+                    submit(dependent_id, pool)
 
-    executor.cancel(long_running)
-    thread.join()
+            if len(futures) == len(deps) and all(f.done() for f in futures.values()):
+                done.set()
 
-    # Delete removes the task from the ledger entirely.
-    del ledger[task.id]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        with lock:
+            for task_id, dep_list in deps.items():
+                if not dep_list:
+                    submit(task_id, pool)
+        done.wait()
+
+    print(f"\nwall time: {time.monotonic() - start:.2f}s")
 
 
 if __name__ == "__main__":
