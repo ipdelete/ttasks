@@ -1,8 +1,10 @@
 import os
 import signal
 import subprocess
-from typing import Callable, Any
-from task import Task, TaskType, TaskStatus
+from collections.abc import Callable
+from typing import Any
+
+from task import Task, TaskStatus, TaskType
 
 
 class TaskCancelled(RuntimeError):
@@ -70,10 +72,12 @@ class TaskExecutor:
         try:
             try:
                 stdout, stderr = process.communicate(timeout=task.timeout)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as e:
                 self._terminate_process(process)
                 process.communicate()
-                raise TimeoutError(f"Task timed out after {task.timeout} seconds")
+                raise TimeoutError(
+                    f"Task timed out after {task.timeout} seconds"
+                ) from e
         finally:
             self._running_processes.pop(task.id, None)
 

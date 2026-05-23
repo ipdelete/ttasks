@@ -8,3 +8,15 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tool caches
+.ruff_cache/
+.ty/
+
+# Editor / OS noise
+.DS_Store

@@ -14,8 +14,9 @@ def test_timeout_must_be_positive() -> None:
 def test_status_is_read_only() -> None:
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
 
+    attr = "status"
     with pytest.raises(AttributeError):
-        task.status = TaskStatus.DONE  # type: ignore[misc]
+        setattr(task, attr, TaskStatus.DONE)
 
     assert task.status == TaskStatus.PENDING
 
@@ -42,7 +43,9 @@ def test_invalid_transition_is_rejected() -> None:
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
     task.transition_to(TaskStatus.CANCELLED)
 
-    with pytest.raises(ValueError, match="Cannot transition task from 'cancelled' to 'done'"):
+    with pytest.raises(
+        ValueError, match="Cannot transition task from 'cancelled' to 'done'"
+    ):
         task.transition_to(TaskStatus.DONE)
 
     assert task.status == TaskStatus.CANCELLED

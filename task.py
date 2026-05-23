@@ -1,7 +1,7 @@
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-import uuid
 
 
 class TaskStatus(Enum):
@@ -53,9 +53,11 @@ class Task:
 
     def transition_to(self, status: TaskStatus, error: str | None = None) -> None:
         if not self.can_transition_to(status):
-            raise ValueError(
-                f"Cannot transition task from {self._status.value!r} to {status.value!r}"
+            message = (
+                f"Cannot transition task from {self._status.value!r} "
+                f"to {status.value!r}"
             )
+            raise ValueError(message)
 
         self._status = status
         self.error = error

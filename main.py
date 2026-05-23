@@ -3,7 +3,7 @@ import time
 
 from executor import TaskCancelled, default_executor
 from ledger import TaskLedger
-from task import Task, TaskType, TaskStatus
+from task import Task, TaskStatus, TaskType
 
 
 def main():
