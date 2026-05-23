@@ -1,3 +1,5 @@
+"""Task execution and process-management helpers."""
+
 import os
 import signal
 import subprocess
@@ -8,22 +10,28 @@ from task import Task, TaskStatus, TaskType
 
 
 class TaskCancelled(RuntimeError):
-    pass
+    """Raised when execution is stopped because a task was cancelled."""
 
 
 class TaskExecutor:
+    """Dispatch tasks to registered handlers and manage task state transitions."""
+
     def __init__(self):
+        """Create an executor with no handlers and no running subprocesses."""
         self._handlers: dict[TaskType, Callable[[Task], Any]] = {}
         self._running_processes: dict[str, subprocess.Popen[str]] = {}
 
     def register(self, task_type: TaskType, handler: Callable[[Task], Any]) -> None:
+        """Register handler as the executor for task_type."""
         self._handlers[task_type] = handler
 
     def is_running(self, task_id: str) -> bool:
+        """Return whether task_id currently has a live subprocess."""
         process = self._running_processes.get(task_id)
         return process is not None and process.poll() is None
 
     def cancel(self, task: Task) -> None:
+        """Cancel a task and terminate its subprocess if one is active."""
         task.cancel()
 
         process = self._running_processes.get(task.id)
@@ -31,6 +39,12 @@ class TaskExecutor:
             self._terminate_process(process)
 
     def execute(self, task: Task) -> Any:
+        """Execute task with its registered handler.
+
+        Execution always moves through RUNNING first. Successful handlers move
+        the task to DONE; failing handlers move it to FAILED unless cancellation
+        happened while the handler was in flight.
+        """
         if not task.can_transition_to(TaskStatus.RUNNING):
             raise ValueError(f"Cannot execute task with status {task.status.value!r}")
 
@@ -60,6 +74,7 @@ class TaskExecutor:
         *,
         shell: bool = False,
     ) -> subprocess.CompletedProcess[str]:
+        """Run a subprocess for task and enforce timeout/cancellation behavior."""
         process = subprocess.Popen(
             args,
             shell=shell,
@@ -95,6 +110,7 @@ class TaskExecutor:
 
     @staticmethod
     def _terminate_process(process: subprocess.Popen[str]) -> None:
+        """Terminate a process group, escalating to SIGKILL if needed."""
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -107,21 +123,28 @@ class TaskExecutor:
             process.wait()
 
     def _run_bash(self, task: Task) -> subprocess.CompletedProcess[str]:
+        """Run trusted bash payload text through the system shell."""
+        # Intentionally uses shell=True because TaskType.BASH represents trusted
+        # shell code, not a shell-free argv command.
         return self._run_command(task, task.payload, shell=True)
 
     def _run_powershell(self, task: Task) -> subprocess.CompletedProcess[str]:
+        """Run trusted PowerShell payload text with pwsh."""
         return self._run_command(task, ["pwsh", "-Command", task.payload])
 
 
 def _run_prompt(task: Task) -> str:
+    """Placeholder for prompt execution until a prompt backend is registered."""
     raise NotImplementedError("Prompt handler not configured")
 
 
 def _run_agent(task: Task) -> str:
+    """Placeholder for agent execution until an agent backend is registered."""
     raise NotImplementedError("Agent handler not configured")
 
 
 def default_executor() -> TaskExecutor:
+    """Return a TaskExecutor configured with the built-in task handlers."""
     executor = TaskExecutor()
     executor.register(TaskType.BASH, executor._run_bash)
     executor.register(TaskType.POWERSHELL, executor._run_powershell)

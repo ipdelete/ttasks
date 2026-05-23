@@ -1,3 +1,5 @@
+"""Tests for task execution, retries, timeout, and cancellation."""
+
 import threading
 import time
 
@@ -8,10 +10,12 @@ from task import Task, TaskStatus, TaskType
 
 
 def test_execute_moves_task_through_running_to_done() -> None:
+    """execute() marks a task RUNNING before the handler sees it, then DONE."""
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
     def handler(task: Task) -> str:
+        """Assert the executor transitions to RUNNING before dispatch."""
         assert task.status == TaskStatus.RUNNING
         return "ok"
 
@@ -22,11 +26,13 @@ def test_execute_moves_task_through_running_to_done() -> None:
 
 
 def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
+    """Cancelled tasks are rejected before any handler side effects occur."""
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
     called = False
 
     def handler(task: Task) -> None:
+        """Record if this unexpectedly gets called."""
         nonlocal called
         called = True
 
@@ -41,11 +47,13 @@ def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
 
 
 def test_executor_clears_previous_error_on_successful_retry() -> None:
+    """A successful retry clears the stale error from a previous failure."""
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
     attempts = 0
 
     def handler(task: Task) -> str:
+        """Fail once, then succeed on retry."""
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -66,7 +74,23 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
     assert task.error is None
 
 
+def test_bash_task_supports_shell_syntax() -> None:
+    """BASH tasks intentionally execute shell syntax such as pipes."""
+    executor = default_executor()
+    task = Task(
+        title="Shell syntax",
+        payload="printf 'hello\\n' | grep hello",
+        type=TaskType.BASH,
+    )
+
+    result = executor.execute(task)
+
+    assert result.stdout == "hello\n"
+    assert task.status == TaskStatus.DONE
+
+
 def test_bash_task_times_out() -> None:
+    """A subprocess exceeding task.timeout is terminated and marked FAILED."""
     executor = default_executor()
     task = Task(
         title="Slow",
@@ -84,11 +108,13 @@ def test_bash_task_times_out() -> None:
 
 
 def test_cancel_stops_in_flight_bash_task() -> None:
+    """Cancelling a running bash task terminates its subprocess."""
     executor = default_executor()
     task = Task(title="Long running", payload="sleep 30", type=TaskType.BASH)
     errors: list[BaseException] = []
 
     def run_task() -> None:
+        """Run task in a background thread so the test can cancel it."""
         try:
             executor.execute(task)
         except BaseException as error:
@@ -97,6 +123,7 @@ def test_cancel_stops_in_flight_bash_task() -> None:
     thread = threading.Thread(target=run_task)
     thread.start()
 
+    # Wait until both the task state and subprocess registry show it is running.
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         if task.status == TaskStatus.RUNNING and executor.is_running(task.id):

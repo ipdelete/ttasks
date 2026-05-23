@@ -1,3 +1,5 @@
+"""Executable demo for the task ledger and executor."""
+
 import threading
 import time
 
@@ -7,6 +9,7 @@ from task import Task, TaskStatus, TaskType
 
 
 def main():
+    """Run a small end-to-end demo of create, execute, cancel, and delete."""
     ledger = TaskLedger()
     executor = default_executor()
 
@@ -38,6 +41,7 @@ def main():
     ledger[long_running.id] = long_running
 
     def run_long_task() -> None:
+        """Execute the long task and report expected cancellation."""
         try:
             executor.execute(long_running)
         except TaskCancelled:
@@ -46,6 +50,7 @@ def main():
     thread = threading.Thread(target=run_long_task)
     thread.start()
 
+    # Wait until the subprocess is actually tracked before cancelling it.
     while not (
         long_running.status == TaskStatus.RUNNING
         and executor.is_running(long_running.id)
