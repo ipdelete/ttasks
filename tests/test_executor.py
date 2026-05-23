@@ -9,8 +9,36 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from executor import TaskCancelled, TaskExecutor, default_executor
+from executor import (
+    TaskCancelled,
+    TaskContext,
+    TaskExecutor,
+    TaskResult,
+    default_executor,
+)
 from task import Task, TaskStatus, TaskType
+
+
+def test_task_context_exposes_read_only_task_view() -> None:
+    """TaskContext exposes task data without exposing lifecycle mutators."""
+    task = Task(
+        title="Example",
+        description="Demo task",
+        payload="echo hi",
+        type=TaskType.BASH,
+        timeout=1.5,
+    )
+    context = TaskContext(task)
+
+    assert context.id == task.id
+    assert context.title == "Example"
+    assert context.description == "Demo task"
+    assert context.payload == "echo hi"
+    assert context.type == TaskType.BASH
+    assert context.timeout == 1.5
+    assert context.status == TaskStatus.PENDING
+    assert context.cancelled is False
+    context.raise_if_cancelled()
 
 
 def test_execute_moves_task_through_running_to_done() -> None:
@@ -18,15 +46,39 @@ def test_execute_moves_task_through_running_to_done() -> None:
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
-    def handler(task: Task) -> str:
+    def handler(context: TaskContext) -> str:
         """Assert the executor transitions to RUNNING before dispatch."""
-        assert task.status == TaskStatus.RUNNING
+        assert context.status == TaskStatus.RUNNING
         return "ok"
 
     executor.register(TaskType.BASH, handler)
 
-    assert executor.execute(task) == "ok"
+    result = executor.execute(task)
+
+    assert result == TaskResult(
+        task_id=task.id,
+        status=TaskStatus.DONE,
+        output="ok",
+        raw="ok",
+    )
     assert task.status == TaskStatus.DONE
+
+
+def test_task_result_wraps_non_string_raw_values() -> None:
+    """Arbitrary handler return values are preserved on TaskResult.raw."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+    raw = {"answer": 42}
+
+    def handler(context: TaskContext) -> dict[str, int]:
+        """Return a non-string object to exercise raw result wrapping."""
+        return raw
+
+    executor.register(TaskType.BASH, handler)
+
+    result = executor.execute(task)
+
+    assert result == TaskResult(task_id=task.id, status=TaskStatus.DONE, raw=raw)
 
 
 def test_execute_rejects_task_without_registered_handler() -> None:
@@ -45,7 +97,7 @@ def test_handler_failure_marks_task_failed_and_stores_error() -> None:
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
-    def handler(task: Task) -> None:
+    def handler(context: TaskContext) -> None:
         """Raise a representative handler failure."""
         raise RuntimeError("boom")
 
@@ -64,7 +116,7 @@ def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
     task = Task(title="Example", payload="", type=TaskType.BASH)
     called = False
 
-    def handler(task: Task) -> None:
+    def handler(context: TaskContext) -> None:
         """Record if this unexpectedly gets called."""
         nonlocal called
         called = True
@@ -85,7 +137,7 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
     task = Task(title="Example", payload="", type=TaskType.BASH)
     attempts = 0
 
-    def handler(task: Task) -> str:
+    def handler(context: TaskContext) -> str:
         """Fail once, then succeed on retry."""
         nonlocal attempts
         attempts += 1
@@ -101,8 +153,11 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
     assert task.status == TaskStatus.FAILED
     assert task.error == "boom"
 
-    assert executor.execute(task) == "ok"
+    result = executor.execute(task)
 
+    assert result.output == "ok"
+    assert result.raw == "ok"
+    assert result.status == TaskStatus.DONE
     assert task.status == TaskStatus.DONE
     assert task.error is None
 
@@ -114,7 +169,12 @@ def test_default_executor_can_execute_bash() -> None:
 
     result = executor.execute(task)
 
-    assert result.stdout == "hi\n"
+    assert result.task_id == task.id
+    assert result.status == TaskStatus.DONE
+    assert result.output == "hi\n"
+    assert result.error is None
+    assert result.returncode == 0
+    assert isinstance(result.raw, subprocess.CompletedProcess)
     assert task.status == TaskStatus.DONE
     assert not executor.is_running(task.id)
 
@@ -130,7 +190,8 @@ def test_bash_task_supports_shell_syntax() -> None:
 
     result = executor.execute(task)
 
-    assert result.stdout == "hello\n"
+    assert result.output == "hello\n"
+    assert result.returncode == 0
     assert task.status == TaskStatus.DONE
 
 
@@ -183,9 +244,23 @@ def test_powershell_task_executes() -> None:
 
     result = executor.execute(task)
 
-    assert "hello" in result.stdout
+    assert "hello" in result.output
+    assert result.returncode == 0
     assert task.status == TaskStatus.DONE
     assert not executor.is_running(task.id)
+
+
+def test_bash_task_without_timeout_waits_for_completion() -> None:
+    """timeout=None means the subprocess is allowed to run until it exits."""
+    executor = default_executor()
+    task = Task(title="No timeout", payload="sleep 0.1; echo done", type=TaskType.BASH)
+
+    result = executor.execute(task)
+
+    assert result.output == "done\n"
+    assert result.returncode == 0
+    assert task.status == TaskStatus.DONE
+    assert task.timeout is None
 
 
 def test_bash_task_times_out() -> None:
@@ -211,7 +286,7 @@ def test_handler_cancellation_after_return_raises_task_cancelled() -> None:
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
-    def handler(task: Task) -> str:
+    def handler(context: TaskContext) -> str:
         """Cancel the task before returning a result."""
         task.cancel()
         return "ignored"
@@ -229,7 +304,7 @@ def test_handler_error_after_cancellation_raises_task_cancelled() -> None:
     executor = TaskExecutor()
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
-    def handler(task: Task) -> None:
+    def handler(context: TaskContext) -> None:
         """Cancel the task, then raise like a terminated worker might."""
         task.cancel()
         raise RuntimeError("worker stopped")
@@ -275,7 +350,7 @@ def test_run_command_terminates_if_task_cancelled_during_process_start() -> None
         patch.object(executor, "_terminate_process") as terminate,
         pytest.raises(TaskCancelled, match=f"Task {task.id!r} was cancelled"),
     ):
-        executor._run_command(task, "ignored", shell=True)
+        executor._run_command(TaskContext(task), "ignored", shell=True)
 
     terminate.assert_called_once_with(process)
     assert not executor.is_running(task.id)
@@ -289,7 +364,7 @@ def test_run_command_reports_cancelled_nonzero_process_as_task_cancelled() -> No
     task.cancel()
 
     with pytest.raises(TaskCancelled, match=f"Task {task.id!r} was cancelled"):
-        executor._run_command(task, "exit 1", shell=True)
+        executor._run_command(TaskContext(task), "exit 1", shell=True)
 
     assert not executor.is_running(task.id)
 

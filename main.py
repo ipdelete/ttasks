@@ -27,7 +27,7 @@ def main():
 
     # Execute moves PENDING -> RUNNING -> DONE.
     result = executor.execute(task)
-    print(result.stdout)
+    print(result.output)
     print(task)
 
     # Cancel a task before it starts: PENDING -> CANCELLED.

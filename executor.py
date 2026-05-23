@@ -4,7 +4,8 @@ import os
 import signal
 import subprocess
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, cast
 
 from task import Task, TaskStatus, TaskType
 
@@ -13,15 +14,106 @@ class TaskCancelled(RuntimeError):
     """Raised when execution is stopped because a task was cancelled."""
 
 
+@dataclass(frozen=True)
+class TaskContext:
+    """Read-only execution view passed to task handlers.
+
+    The executor owns lifecycle transitions. Handlers receive this context so
+    they can inspect task data and cancellation state without being given the
+    public Task state-machine mutation API.
+    """
+
+    __task: Task
+
+    @property
+    def id(self) -> str:
+        """Return the task identity."""
+        return self.__task.id
+
+    @property
+    def title(self) -> str:
+        """Return the task title."""
+        return self.__task.title
+
+    @property
+    def description(self) -> str:
+        """Return the task description."""
+        return self.__task.description
+
+    @property
+    def payload(self) -> str:
+        """Return the task payload."""
+        return self.__task.payload
+
+    @property
+    def type(self) -> TaskType:
+        """Return the task type."""
+        return self.__task.type
+
+    @property
+    def timeout(self) -> float | None:
+        """Return the task timeout."""
+        return self.__task.timeout
+
+    @property
+    def status(self) -> TaskStatus:
+        """Return the task's current live status."""
+        return self.__task.status
+
+    @property
+    def cancelled(self) -> bool:
+        """Return whether cancellation has been requested for the task."""
+        return self.status == TaskStatus.CANCELLED
+
+    def raise_if_cancelled(self) -> None:
+        """Raise TaskCancelled if cancellation has been requested."""
+        if self.cancelled:
+            raise TaskCancelled(f"Task {self.id!r} was cancelled")
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    """Normalized output returned by TaskExecutor.execute()."""
+
+    task_id: str
+    status: TaskStatus
+    output: str = ""
+    error: str | None = None
+    returncode: int | None = None
+    raw: object | None = None
+
+    @classmethod
+    def from_raw(cls, task: Task, raw: object) -> "TaskResult":
+        """Normalize a handler return value into a TaskResult."""
+        if isinstance(raw, subprocess.CompletedProcess):
+            completed = cast("subprocess.CompletedProcess[str]", raw)
+            return cls(
+                task_id=task.id,
+                status=task.status,
+                output=completed.stdout or "",
+                error=completed.stderr or None,
+                returncode=completed.returncode,
+                raw=completed,
+            )
+
+        if isinstance(raw, str):
+            return cls(task_id=task.id, status=task.status, output=raw, raw=raw)
+
+        return cls(task_id=task.id, status=task.status, raw=raw)
+
+
+TaskHandler = Callable[[TaskContext], Any]
+
+
 class TaskExecutor:
     """Dispatch tasks to registered handlers and manage task state transitions."""
 
     def __init__(self):
         """Create an executor with no handlers and no running subprocesses."""
-        self._handlers: dict[TaskType, Callable[[Task], Any]] = {}
+        self._handlers: dict[TaskType, TaskHandler] = {}
         self._running_processes: dict[str, subprocess.Popen[str]] = {}
 
-    def register(self, task_type: TaskType, handler: Callable[[Task], Any]) -> None:
+    def register(self, task_type: TaskType, handler: TaskHandler) -> None:
         """Register handler as the executor for task_type."""
         self._handlers[task_type] = handler
 
@@ -38,7 +130,7 @@ class TaskExecutor:
         if process is not None and process.poll() is None:
             self._terminate_process(process)
 
-    def execute(self, task: Task) -> Any:
+    def execute(self, task: Task) -> TaskResult:
         """Execute task with its registered handler.
 
         Execution always moves through RUNNING first. Successful handlers move
@@ -53,12 +145,12 @@ class TaskExecutor:
             raise ValueError(f"No handler registered for task type {task.type.value!r}")
 
         task.transition_to(TaskStatus.RUNNING)
+        context = TaskContext(task)
         try:
-            result = handler(task)
-            if task.status == TaskStatus.CANCELLED:
-                raise TaskCancelled(f"Task {task.id!r} was cancelled")
+            raw_result = handler(context)
+            context.raise_if_cancelled()
             task.transition_to(TaskStatus.DONE)
-            return result
+            return TaskResult.from_raw(task, raw_result)
         except TaskCancelled:
             raise
         except Exception as e:
@@ -69,12 +161,16 @@ class TaskExecutor:
 
     def _run_command(
         self,
-        task: Task,
+        context: TaskContext,
         args: str | list[str],
         *,
         shell: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        """Run a subprocess for task and enforce timeout/cancellation behavior."""
+        """Run a subprocess for task and enforce cancellation/timeout behavior.
+
+        context.timeout=None follows subprocess semantics: wait indefinitely
+        unless another caller cancels the task through TaskExecutor.cancel().
+        """
         process = subprocess.Popen(
             args,
             shell=shell,
@@ -83,20 +179,20 @@ class TaskExecutor:
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-        self._running_processes[task.id] = process
-        if task.status == TaskStatus.CANCELLED:
+        self._running_processes[context.id] = process
+        if context.cancelled:
             self._terminate_process(process)
         try:
             try:
-                stdout, stderr = process.communicate(timeout=task.timeout)
+                stdout, stderr = process.communicate(timeout=context.timeout)
             except subprocess.TimeoutExpired as e:
                 self._terminate_process(process)
                 process.communicate()
                 raise TimeoutError(
-                    f"Task timed out after {task.timeout} seconds"
+                    f"Task timed out after {context.timeout} seconds"
                 ) from e
         finally:
-            self._running_processes.pop(task.id, None)
+            self._running_processes.pop(context.id, None)
 
         result = subprocess.CompletedProcess(
             args=args,
@@ -105,8 +201,8 @@ class TaskExecutor:
             stderr=stderr,
         )
         if result.returncode != 0:
-            if task.status == TaskStatus.CANCELLED:
-                raise TaskCancelled(f"Task {task.id!r} was cancelled")
+            if context.cancelled:
+                raise TaskCancelled(f"Task {context.id!r} was cancelled")
             raise RuntimeError(result.stderr or f"exited with code {result.returncode}")
         return result
 
@@ -124,23 +220,23 @@ class TaskExecutor:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait()
 
-    def _run_bash(self, task: Task) -> subprocess.CompletedProcess[str]:
+    def _run_bash(self, context: TaskContext) -> subprocess.CompletedProcess[str]:
         """Run trusted bash payload text through the system shell."""
         # Intentionally uses shell=True because TaskType.BASH represents trusted
         # shell code, not a shell-free argv command.
-        return self._run_command(task, task.payload, shell=True)
+        return self._run_command(context, context.payload, shell=True)
 
-    def _run_powershell(self, task: Task) -> subprocess.CompletedProcess[str]:
+    def _run_powershell(self, context: TaskContext) -> subprocess.CompletedProcess[str]:
         """Run trusted PowerShell payload text with pwsh."""
-        return self._run_command(task, ["pwsh", "-Command", task.payload])
+        return self._run_command(context, ["pwsh", "-Command", context.payload])
 
 
-def _run_prompt(task: Task) -> str:
+def _run_prompt(context: TaskContext) -> str:
     """Placeholder for prompt execution until a prompt backend is registered."""
     raise NotImplementedError("Prompt handler not configured")
 
 
-def _run_agent(task: Task) -> str:
+def _run_agent(context: TaskContext) -> str:
     """Placeholder for agent execution until an agent backend is registered."""
     raise NotImplementedError("Agent handler not configured")
 

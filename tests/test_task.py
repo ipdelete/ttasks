@@ -23,18 +23,23 @@ def test_repr_includes_identity_title_and_status() -> None:
     )
 
 
-def test_timeout_accepts_none_and_positive_values() -> None:
-    """Tasks accept the default no-timeout value and positive timeout values."""
-    no_timeout = Task(title="No timeout", payload="echo hi", type=TaskType.BASH)
-    with_timeout = Task(
+def test_timeout_defaults_to_no_automatic_timeout() -> None:
+    """Omitting timeout intentionally means no automatic timeout is applied."""
+    task = Task(title="No timeout", payload="echo hi", type=TaskType.BASH)
+
+    assert task.timeout is None
+
+
+def test_timeout_accepts_positive_values() -> None:
+    """Tasks accept positive timeout values for bounded execution."""
+    task = Task(
         title="Timeout",
         payload="echo hi",
         type=TaskType.BASH,
         timeout=1.5,
     )
 
-    assert no_timeout.timeout is None
-    assert with_timeout.timeout == 1.5
+    assert task.timeout == 1.5
 
 
 def test_id_is_read_only() -> None:

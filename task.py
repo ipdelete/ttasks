@@ -42,6 +42,9 @@ class Task:
 
     status is intentionally exposed as a read-only property. Use transition_to()
     or cancel() to mutate it so invalid state transitions cannot be bypassed.
+
+    timeout=None is intentional and means no automatic timeout is applied;
+    callers should set a positive timeout for bounded subprocess execution.
     """
 
     title: str
