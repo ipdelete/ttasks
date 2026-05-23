@@ -14,6 +14,29 @@ def test_timeout_must_be_positive() -> None:
         Task(title="Example", payload="echo hi", type=TaskType.BASH, timeout=-1)
 
 
+def test_repr_includes_identity_title_and_status() -> None:
+    """The task repr includes the useful debugging fields."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+
+    assert repr(task) == (
+        f"Task(id={task.id!r}, title='Example', status={TaskStatus.PENDING.value})"
+    )
+
+
+def test_timeout_accepts_none_and_positive_values() -> None:
+    """Tasks accept the default no-timeout value and positive timeout values."""
+    no_timeout = Task(title="No timeout", payload="echo hi", type=TaskType.BASH)
+    with_timeout = Task(
+        title="Timeout",
+        payload="echo hi",
+        type=TaskType.BASH,
+        timeout=1.5,
+    )
+
+    assert no_timeout.timeout is None
+    assert with_timeout.timeout == 1.5
+
+
 def test_status_is_read_only() -> None:
     """External callers cannot bypass the state machine via status assignment."""
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
@@ -44,6 +67,31 @@ def test_cancel_changes_status_through_state_machine() -> None:
     task.cancel()
 
     assert task.status == TaskStatus.CANCELLED
+
+
+def test_cancel_preserves_previous_error() -> None:
+    """Cancelling a failed task keeps the failure reason for inspection."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.FAILED, error="boom")
+
+    task.cancel()
+
+    assert task.status == TaskStatus.CANCELLED
+    assert task.error == "boom"
+
+
+def test_invalid_transition_preserves_error() -> None:
+    """A rejected transition does not mutate status or error."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.FAILED, error="boom")
+
+    with pytest.raises(ValueError):
+        task.transition_to(TaskStatus.DONE)
+
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "boom"
 
 
 @pytest.mark.parametrize(

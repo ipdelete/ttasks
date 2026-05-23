@@ -85,8 +85,8 @@ class Task:
         self.error = error
 
     def cancel(self) -> None:
-        """Cancel the task using the state-machine transition rules."""
-        self.transition_to(TaskStatus.CANCELLED)
+        """Cancel the task without discarding any existing error detail."""
+        self.transition_to(TaskStatus.CANCELLED, error=self.error)
 
     def __repr__(self):
         """Return a concise representation focused on identity and status."""
