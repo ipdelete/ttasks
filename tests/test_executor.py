@@ -249,8 +249,35 @@ def test_cancel_without_running_process_only_cancels_task() -> None:
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
     executor.cancel(task)
+    executor.cancel(task)
 
     assert task.status == TaskStatus.CANCELLED
+    assert not executor.is_running(task.id)
+
+
+def test_run_command_terminates_if_task_cancelled_during_process_start() -> None:
+    """A cancellation between Popen and process registration is still honored."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task.transition_to(TaskStatus.RUNNING)
+    process = Mock(spec=subprocess.Popen)
+    process.pid = 12345
+    process.returncode = -signal.SIGTERM
+    process.communicate.return_value = ("", "")
+
+    def fake_popen(*args: object, **kwargs: object) -> Mock:
+        """Cancel after process creation but before _run_command can register it."""
+        task.cancel()
+        return process
+
+    with (
+        patch("executor.subprocess.Popen", side_effect=fake_popen),
+        patch.object(executor, "_terminate_process") as terminate,
+        pytest.raises(TaskCancelled, match=f"Task {task.id!r} was cancelled"),
+    ):
+        executor._run_command(task, "ignored", shell=True)
+
+    terminate.assert_called_once_with(process)
     assert not executor.is_running(task.id)
 
 

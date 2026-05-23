@@ -84,6 +84,8 @@ class TaskExecutor:
             start_new_session=True,
         )
         self._running_processes[task.id] = process
+        if task.status == TaskStatus.CANCELLED:
+            self._terminate_process(process)
         try:
             try:
                 stdout, stderr = process.communicate(timeout=task.timeout)

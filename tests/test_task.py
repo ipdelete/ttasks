@@ -37,6 +37,19 @@ def test_timeout_accepts_none_and_positive_values() -> None:
     assert with_timeout.timeout == 1.5
 
 
+def test_id_is_read_only() -> None:
+    """External callers cannot mutate task identity after construction."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    original_id = task.id
+
+    # Use dynamic setattr so the type checker accepts this runtime guard test.
+    attr = "id"
+    with pytest.raises(AttributeError):
+        setattr(task, attr, "new-id")
+
+    assert task.id == original_id
+
+
 def test_status_is_read_only() -> None:
     """External callers cannot bypass the state machine via status assignment."""
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
@@ -69,12 +82,23 @@ def test_cancel_changes_status_through_state_machine() -> None:
     assert task.status == TaskStatus.CANCELLED
 
 
+def test_cancel_is_idempotent() -> None:
+    """Calling cancel repeatedly leaves the task cancelled without error."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+
+    task.cancel()
+    task.cancel()
+
+    assert task.status == TaskStatus.CANCELLED
+
+
 def test_cancel_preserves_previous_error() -> None:
     """Cancelling a failed task keeps the failure reason for inspection."""
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
     task.transition_to(TaskStatus.RUNNING)
     task.transition_to(TaskStatus.FAILED, error="boom")
 
+    task.cancel()
     task.cancel()
 
     assert task.status == TaskStatus.CANCELLED

@@ -58,6 +58,21 @@ def test_get_missing_task_raises_key_error() -> None:
         ledger["missing"]
 
 
+def test_task_id_cannot_change_after_storing_in_ledger() -> None:
+    """Read-only task IDs prevent ledger/task identity drift after insertion."""
+    ledger = TaskLedger()
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task_id = task.id
+    ledger[task.id] = task
+
+    attr = "id"
+    with pytest.raises(AttributeError):
+        setattr(task, attr, "new-id")
+
+    assert task.id == task_id
+    assert ledger[task_id] is task
+
+
 def test_ledger_accepts_task_under_its_own_id() -> None:
     """A task stored under task.id is retrievable by that same ID."""
     ledger = TaskLedger()

@@ -50,7 +50,7 @@ class Task:
     description: str = ""
     error: str | None = None
     timeout: float | None = None
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    _id: str = field(default_factory=lambda: str(uuid.uuid4()), repr=False)
     created_at: datetime = field(default_factory=datetime.now)
     _status: TaskStatus = field(default=TaskStatus.PENDING, init=False, repr=False)
 
@@ -58,6 +58,11 @@ class Task:
         """Validate task configuration after dataclass initialization."""
         if self.timeout is not None and self.timeout <= 0:
             raise ValueError("timeout must be greater than 0")
+
+    @property
+    def id(self) -> str:
+        """Return the immutable task identity."""
+        return self._id
 
     @property
     def status(self) -> TaskStatus:
@@ -85,7 +90,14 @@ class Task:
         self.error = error
 
     def cancel(self) -> None:
-        """Cancel the task without discarding any existing error detail."""
+        """Cancel the task without discarding any existing error detail.
+
+        Cancellation is intentionally idempotent so duplicate user/API requests
+        are harmless, while transition_to(CANCELLED) remains strict.
+        """
+        if self.status == TaskStatus.CANCELLED:
+            return
+
         self.transition_to(TaskStatus.CANCELLED, error=self.error)
 
     def __repr__(self):
