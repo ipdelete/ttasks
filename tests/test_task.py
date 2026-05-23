@@ -2,7 +2,7 @@
 
 import pytest
 
-from task import Task, TaskStatus, TaskType
+from ttasks.task import Task, TaskStatus, TaskType
 
 
 def test_timeout_must_be_positive() -> None:

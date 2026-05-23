@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ttasks — kanban</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #fafafa;
+    --border: #e5e5e5;
+    --text: #111;
+    --muted: #666;
+    --accent: #2a5db0;
+    --pending: #b58900;
+    --running: #2a5db0;
+    --done: #2e7d32;
+    --failed: #c62828;
+    --cancelled: #757575;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  header {
+    padding: 1.5rem 2rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+  }
+  h1 { margin: 0; font-size: 1.3rem; font-weight: 600; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin: 0; }
+  button {
+    font: inherit;
+    background: #fff;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.8rem;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: #234e95; color: #fff; }
+
+  .toolbar { margin-left: auto; display: flex; gap: 0.5rem; }
+
+  main {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0.75rem;
+    padding: 1rem 2rem 2rem;
+    min-height: calc(100vh - 5rem);
+  }
+  .column {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    min-height: 200px;
+  }
+  .column-header {
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .column-header h2 { margin: 0; font-size: 0.95rem; font-weight: 600; }
+  .count {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 0.5rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    min-width: 1.5rem;
+    text-align: center;
+  }
+  .column[data-status="pending"]   .count { color: var(--pending); }
+  .column[data-status="running"]   .count { color: var(--running); }
+  .column[data-status="done"]      .count { color: var(--done); }
+  .column[data-status="failed"]    .count { color: var(--failed); }
+  .column[data-status="cancelled"] .count { color: var(--cancelled); }
+
+  .dropzone {
+    flex: 1;
+    padding: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    overflow-y: auto;
+  }
+  .dropzone.drag-over { background: #f0f5ff; }
+  .dropzone:empty::after {
+    content: "—";
+    color: var(--muted);
+    text-align: center;
+    padding: 1rem;
+    font-size: 0.85rem;
+  }
+
+  .card {
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem 0.7rem;
+    cursor: grab;
+    font-size: 0.9rem;
+  }
+  .card:active { cursor: grabbing; }
+  .card.dragging { opacity: 0.4; }
+  .card-title { font-weight: 600; margin-bottom: 0.2rem; }
+  .card-type { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-payload {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    background: #f7f7f7;
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    margin-top: 0.4rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 4.5rem;
+    overflow: hidden;
+  }
+  .card-error {
+    color: var(--failed);
+    font-size: 0.8rem;
+    margin-top: 0.4rem;
+  }
+  .card-actions {
+    margin-top: 0.5rem;
+    display: flex;
+    gap: 0.3rem;
+  }
+  .card-actions button {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.78rem;
+  }
+
+  /* modal */
+  .backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.3);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+  }
+  .backdrop.open { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 8px;
+    padding: 1.5rem;
+    width: 90%;
+    max-width: 420px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+  }
+  .modal h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+  .field { margin-bottom: 0.8rem; display: flex; flex-direction: column; gap: 0.25rem; }
+  .field label { font-size: 0.85rem; color: var(--muted); }
+  .field input, .field select, .field textarea {
+    font: inherit;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: #fff;
+    color: var(--text);
+  }
+  .field textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    min-height: 5rem;
+    resize: vertical;
+  }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; }
+
+  .toast {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    background: var(--failed);
+    color: #fff;
+    padding: 0.6rem 0.9rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    display: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+  .toast.show { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ttasks kanban</h1>
+  <p class="subtitle">Drag a card to <em>Running</em> to execute. Drag to <em>Cancelled</em> to stop.</p>
+  <div class="toolbar">
+    <button id="refresh">Refresh</button>
+    <button id="new-task" class="primary">+ New task</button>
+  </div>
+</header>
+
+<main id="board">
+  <section class="column" data-status="pending">
+    <div class="column-header"><h2>Pending</h2><span class="count" data-count></span></div>
+    <div class="dropzone" data-zone="pending"></div>
+  </section>
+  <section class="column" data-status="running">
+    <div class="column-header"><h2>Running</h2><span class="count" data-count></span></div>
+    <div class="dropzone" data-zone="running"></div>
+  </section>
+  <section class="column" data-status="done">
+    <div class="column-header"><h2>Done</h2><span class="count" data-count></span></div>
+    <div class="dropzone" data-zone="done"></div>
+  </section>
+  <section class="column" data-status="failed">
+    <div class="column-header"><h2>Failed</h2><span class="count" data-count></span></div>
+    <div class="dropzone" data-zone="failed"></div>
+  </section>
+  <section class="column" data-status="cancelled">
+    <div class="column-header"><h2>Cancelled</h2><span class="count" data-count></span></div>
+    <div class="dropzone" data-zone="cancelled"></div>
+  </section>
+</main>
+
+<div class="backdrop" id="modal-backdrop">
+  <div class="modal">
+    <h2>New task</h2>
+    <form id="new-task-form">
+      <div class="field">
+        <label for="title">Title</label>
+        <input id="title" name="title" required>
+      </div>
+      <div class="field">
+        <label for="type">Type</label>
+        <select id="type" name="type">
+          <option value="bash" selected>bash</option>
+          <option value="powershell">powershell</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="payload">Payload</label>
+        <textarea id="payload" name="payload" placeholder="ls -la"></textarea>
+      </div>
+      <div class="field">
+        <label for="timeout">Timeout (seconds, optional)</label>
+        <input id="timeout" name="timeout" type="number" min="0.1" step="0.1">
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="cancel-new">Cancel</button>
+        <button type="submit" class="primary">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const TRANSITIONS = {
+    // from -> set of allowed target columns via drag
+    pending: new Set(["running", "cancelled"]),
+    running: new Set(["cancelled"]),
+    failed:  new Set(["running", "cancelled"]),
+    done:    new Set(),
+    cancelled: new Set(),
+  };
+
+  let tasks = [];
+  let draggedId = null;
+
+  async function fetchTasks() {
+    const res = await fetch("/api/tasks");
+    const data = await res.json();
+    tasks = data.tasks || [];
+    render();
+  }
+
+  function render() {
+    const byStatus = { pending: [], running: [], done: [], failed: [], cancelled: [] };
+    for (const t of tasks) {
+      (byStatus[t.status] || (byStatus[t.status] = [])).push(t);
+    }
+    for (const status of Object.keys(byStatus)) {
+      const zone = document.querySelector(`[data-zone="${status}"]`);
+      const count = document.querySelector(`.column[data-status="${status}"] [data-count]`);
+      if (!zone) continue;
+      zone.innerHTML = "";
+      for (const t of byStatus[status]) zone.appendChild(card(t));
+      if (count) count.textContent = byStatus[status].length;
+    }
+  }
+
+  function card(t) {
+    const el = document.createElement("div");
+    el.className = "card";
+    el.draggable = true;
+    el.dataset.id = t.id;
+    el.dataset.status = t.status;
+
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = t.title;
+    el.appendChild(title);
+
+    const type = document.createElement("div");
+    type.className = "card-type";
+    type.textContent = t.type + (t.timeout ? ` · timeout ${t.timeout}s` : "");
+    el.appendChild(type);
+
+    if (t.payload) {
+      const payload = document.createElement("div");
+      payload.className = "card-payload";
+      payload.textContent = t.payload;
+      el.appendChild(payload);
+    }
+
+    if (t.error) {
+      const err = document.createElement("div");
+      err.className = "card-error";
+      err.textContent = t.error;
+      el.appendChild(err);
+    }
+
+    if (t.status === "done" || t.status === "failed" || t.status === "cancelled") {
+      const actions = document.createElement("div");
+      actions.className = "card-actions";
+      const del = document.createElement("button");
+      del.textContent = "Delete";
+      del.addEventListener("click", () => deleteTask(t.id));
+      actions.appendChild(del);
+      el.appendChild(actions);
+    }
+
+    el.addEventListener("dragstart", e => {
+      draggedId = t.id;
+      el.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", t.id);
+    });
+    el.addEventListener("dragend", () => {
+      draggedId = null;
+      el.classList.remove("dragging");
+    });
+    return el;
+  }
+
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 2500);
+  }
+
+  async function api(method, path, body) {
+    const opts = { method };
+    if (body !== undefined) {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `${method} ${path} failed`);
+    return data;
+  }
+
+  async function runTask(id) {
+    try { await api("POST", `/api/tasks/${id}/run`); await fetchTasks(); }
+    catch (e) { showToast(e.message); }
+  }
+  async function cancelTask(id) {
+    try { await api("POST", `/api/tasks/${id}/cancel`); await fetchTasks(); }
+    catch (e) { showToast(e.message); }
+  }
+  async function deleteTask(id) {
+    try { await api("DELETE", `/api/tasks/${id}`); await fetchTasks(); }
+    catch (e) { showToast(e.message); }
+  }
+
+  // dropzones
+  for (const zone of document.querySelectorAll(".dropzone")) {
+    zone.addEventListener("dragover", e => {
+      if (!draggedId) return;
+      const task = tasks.find(t => t.id === draggedId);
+      if (!task) return;
+      const target = zone.dataset.zone;
+      if (!TRANSITIONS[task.status]?.has(target)) return;
+      e.preventDefault();
+      zone.classList.add("drag-over");
+    });
+    zone.addEventListener("dragleave", e => {
+      if (!zone.contains(e.relatedTarget)) zone.classList.remove("drag-over");
+    });
+    zone.addEventListener("drop", e => {
+      e.preventDefault();
+      zone.classList.remove("drag-over");
+      const id = e.dataTransfer.getData("text/plain") || draggedId;
+      if (!id) return;
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      const target = zone.dataset.zone;
+      if (!TRANSITIONS[task.status]?.has(target)) {
+        showToast(`Cannot move from ${task.status} to ${target}`);
+        return;
+      }
+      if (target === "running") runTask(id);
+      else if (target === "cancelled") cancelTask(id);
+    });
+  }
+
+  // modal
+  const backdrop = document.getElementById("modal-backdrop");
+  document.getElementById("new-task").addEventListener("click", () => {
+    backdrop.classList.add("open");
+    document.getElementById("title").focus();
+  });
+  document.getElementById("cancel-new").addEventListener("click", () => backdrop.classList.remove("open"));
+  backdrop.addEventListener("click", e => { if (e.target === backdrop) backdrop.classList.remove("open"); });
+  document.getElementById("new-task-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const f = e.target;
+    const body = {
+      title: f.title.value,
+      type: f.type.value,
+      payload: f.payload.value,
+    };
+    const t = f.timeout.value;
+    if (t) body.timeout = parseFloat(t);
+    try {
+      await api("POST", "/api/tasks", body);
+      f.reset();
+      backdrop.classList.remove("open");
+      await fetchTasks();
+    } catch (err) {
+      showToast(err.message);
+    }
+  });
+
+  document.getElementById("refresh").addEventListener("click", fetchTasks);
+
+  fetchTasks();
+  setInterval(fetchTasks, 1500);
+</script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ttasks — kanban consumer plan</title>
+<style>
+  html { background: #ffffff; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #111;
+    max-width: 760px;
+    margin: 3rem auto;
+    padding: 0 1.25rem;
+    line-height: 1.6;
+    font-size: 16px;
+  }
+  h1 { font-size: 1.6rem; font-weight: 600; margin-top: 2rem; }
+  h2 { font-size: 1.15rem; font-weight: 600; margin-top: 2.25rem; }
+  h3 { font-size: 1rem; font-weight: 600; margin-top: 1.5rem; }
+  p, ul, ol { margin: 0.75rem 0; }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: 0.25rem 0; }
+  hr { border: 0; border-top: 1px solid #e5e5e5; margin: 2.5rem 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.05em 0.3em; border-radius: 3px; }
+  pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; background: #f7f7f7; padding: 0.9rem 1rem; border-radius: 6px; overflow-x: auto; line-height: 1.5; }
+  pre code { background: transparent; padding: 0; }
+  blockquote { margin: 1rem 0; padding: 0.1rem 1rem; border-left: 3px solid #d0d0d0; color: #333; }
+  table { border-collapse: collapse; margin: 1rem 0; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 0.4rem 0.9rem 0.4rem 0; }
+  th { font-weight: 600; border-bottom: 1px solid #e5e5e5; }
+  a { color: #2a5db0; }
+  strong { font-weight: 600; }
+</style>
+</head>
+<body>
+
+<p>Yes — this is the right instinct, and it's worth being precise about what "SDK" means here, because it changes a few things on disk and forces a couple of design decisions you'd otherwise drift into.</p>
+
+<h2>The rule, stated cleanly</h2>
+
+<blockquote>
+  <p><code>ttasks</code> may be imported by anything. <code>ttasks</code> imports nothing from <code>kanban</code>. If you ever feel <code>ttasks</code> "needs to know" about JSON, HTTP, SSE, CSS, or a column name, that's the signal you've drawn the line in the wrong place.</p>
+</blockquote>
+
+<p>A good smoke test: <code>git grep -iE 'kanban|http|json|sse' ttasks/</code> should be empty, forever.</p>
+
+<h2>What that means concretely</h2>
+
+<p><strong><code>ttasks/</code> is a Python package, not three loose modules.</strong> Move <code>task.py</code>, <code>ledger.py</code>, <code>executor.py</code> under <code>ttasks/</code> with an <code>__init__.py</code> that exports the public surface (<code>Task</code>, <code>TaskStatus</code>, <code>TaskType</code>, <code>TaskLedger</code>, <code>TaskExecutor</code>, <code>TaskResult</code>, <code>TaskContext</code>, <code>TaskCancelled</code>, <code>default_executor</code>). That's the SDK's API contract. Anything not re-exported is private — including helpers like <code>_run_command</code>.</p>
+
+<p><strong>The board lives next to it, not inside it.</strong> Something like:</p>
+
+<pre><code>ttasks/        ← the SDK
+  __init__.py
+  task.py
+  ledger.py
+  executor.py
+kanban/        ← one consumer of the SDK
+  server.py
+  adapter.py   ← JSON shaping lives here
+  index.html
+tests/         ← still tests the SDK only; board gets its own tests later
+main.py        ← entry point that starts the kanban
+demo.py        ← the current main.py, renamed; second consumer, proves the SDK works headless
+</code></pre>
+
+<p>Two consumers (<code>demo.py</code> and <code>kanban/</code>) is healthier than one — it stops the SDK from quietly growing board-shaped knobs.</p>
+
+<h2>The interesting question: where do the new capabilities live?</h2>
+
+<p>The board needs three things that don't exist yet: async submission, an event stream, and a way to render snapshots. Each one is a "which side of the line?" call.</p>
+
+<h3>1. Async submission / worker pool — SDK</h3>
+<p>Tempting to put threads in the board. Don't. "Run this task whenever you can" is a task-runner verb; a future CLI or TUI would re-implement the same pool. I'd add a small <code>TaskRunner</code> to the SDK that composes a ledger + executor + worker pool and exposes <code>submit(task)</code>, <code>cancel(task_id)</code>, etc. The board holds <em>one</em> <code>TaskRunner</code>. That's its entire handle into ttasks.</p>
+
+<h3>2. Event stream — SDK, in domain terms only</h3>
+<p>The board needs to know when a task transitions so it can push SSE. But the SDK must not know what SSE is. The right shape:</p>
+
+<pre><code>runner.subscribe(callback)   # callback(event: TaskEvent)
+# TaskEvent: task_id, old_status, new_status, at
+</code></pre>
+
+<p>The board's SSE endpoint subscribes and re-broadcasts in its own format. Tests can subscribe to assert. A future TUI subscribes the same way. This is gap #2 from <code>todo.html</code> — and notice the board's <em>existence</em> is what justifies adding it. That's the healthy direction of pressure: the consumer pulls capabilities into the SDK, never the reverse.</p>
+
+<h3>3. Snapshotting / serialization — board</h3>
+<p>This is where people accidentally couple. Tempting to add <code>Task.to_dict()</code>. Don't — that's a JSON-flavored method on a domain object, and JSON is a board concern. Keep <code>Task</code> a plain dataclass with properties; let <code>kanban/adapter.py</code> own <code>task_to_dict(task) -&gt; {...}</code>. If a future consumer wants protobuf or msgpack, ttasks doesn't care.</p>
+
+<h2>A couple of subtler calls</h2>
+
+<ul>
+  <li><strong>Columns are a board concept, not a domain concept.</strong> The SDK has 5 statuses. The board <em>chooses</em> to render them as 5 columns. A future TUI might show a flat list with status badges; that's its call. No <code>COLUMN_ORDER</code> constant in ttasks.</li>
+  <li><strong>Filtering by status</strong> — the board can filter in Python via <code>[t for t in ledger if t.status == ...]</code>. Don't add <code>ledger.by_status()</code> until a second consumer wants it. YAGNI keeps the surface honest.</li>
+  <li><strong>Persistence, when you tackle it later, is SDK.</strong> A <code>PersistentTaskLedger</code> or a pluggable storage backend belongs behind the ledger interface. The board shouldn't be able to tell whether the ledger is in-memory or on disk.</li>
+  <li><strong>Drag-to-cancel from a terminal state.</strong> Your state machine forbids <code>DONE → CANCELLED</code>. The board has to honor that — the UI should refuse the drag, not the server should silently swallow a <code>ValueError</code>. The SDK's strictness is a feature; the board adapts to it.</li>
+</ul>
+
+<h2>What I'd build first</h2>
+
+<p>Smallest thing that makes the SDK / consumer split real and exercises the metaphor:</p>
+
+<ol>
+  <li>Package move (<code>ttasks/</code>), <code>demo.py</code> rename, public API pinned in <code>__init__.py</code>.</li>
+  <li>Add <code>TaskRunner</code> to the SDK (ledger + executor + thread pool + <code>submit</code>/<code>cancel</code>/<code>subscribe</code>).</li>
+  <li><code>kanban/server.py</code> with the v1 routes we already agreed on, polling-based, light theme. No SSE yet.</li>
+  <li><code>main.py</code> = "start the kanban on <code>127.0.0.1:8000</code>."</li>
+</ol>
+
+<p>Then SSE as a deliberate v2 — it's a one-liner once <code>runner.subscribe</code> exists.</p>
+
+</body>
+</html>

@@ -2,8 +2,8 @@
 
 import pytest
 
-from ledger import TaskLedger
-from task import Task, TaskStatus, TaskType
+from ttasks.ledger import TaskLedger
+from ttasks.task import Task, TaskStatus, TaskType
 
 
 def test_del_removes_task_from_ledger() -> None:

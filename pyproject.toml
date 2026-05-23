@@ -18,9 +18,7 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = [
-    "--cov=executor",
-    "--cov=ledger",
-    "--cov=task",
+    "--cov=ttasks",
     "--cov-report=term-missing",
 ]
 

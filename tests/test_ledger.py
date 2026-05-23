@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from ledger import TaskLedger
-from task import Task, TaskType
+from ttasks.ledger import TaskLedger
+from ttasks.task import Task, TaskType
 
 
 def test_ledger_rejects_non_task_values() -> None:

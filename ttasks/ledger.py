@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 
-from task import Task
+from ttasks.task import Task
 
 
 class TaskLedger:
