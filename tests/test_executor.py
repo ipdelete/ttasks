@@ -453,3 +453,90 @@ def test_cancel_stops_in_flight_bash_task() -> None:
     assert len(errors) == 1
     assert isinstance(errors[0], TaskCancelled)
     assert not executor.is_running(task.id)
+
+
+# ---- task.result is set on every terminal path ------------------------------
+
+
+def test_task_result_is_none_before_execution() -> None:
+    """A freshly-constructed task has no result yet."""
+    task = Task(title="X", payload="echo hi", type=TaskType.BASH)
+    assert task.result is None
+
+
+def test_successful_execute_sets_task_result() -> None:
+    """A task that completes successfully carries its TaskResult on the task."""
+    task = Task(title="X", payload="echo hi", type=TaskType.BASH)
+    executor = default_executor()
+    returned = executor.execute(task)
+
+    assert task.result is returned
+    assert task.result.status == TaskStatus.DONE
+    assert task.result.output.strip() == "hi"
+    assert task.result.returncode == 0
+
+
+def test_failed_execute_sets_task_result_with_failed_status() -> None:
+    """A task that fails still produces a TaskResult attached to the task."""
+    task = Task(title="X", payload="exit 1", type=TaskType.BASH)
+    executor = default_executor()
+
+    with pytest.raises(RuntimeError):
+        executor.execute(task)
+
+    assert task.result is not None
+    assert task.result.status == TaskStatus.FAILED
+    assert task.result.error  # exception text captured
+    assert task.status == TaskStatus.FAILED
+
+
+def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
+    """A task cancelled mid-run still produces a TaskResult on the task."""
+    task = Task(title="X", payload="sleep 5", type=TaskType.BASH)
+    executor = default_executor()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            executor.execute(task)
+        except BaseException as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        if executor.is_running(task.id):
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("task did not start running")
+
+    executor.cancel(task)
+    thread.join(timeout=2)
+
+    assert isinstance(errors[0], TaskCancelled)
+    assert task.status == TaskStatus.CANCELLED
+    assert task.result is not None
+    assert task.result.status == TaskStatus.CANCELLED
+
+
+def test_retry_after_failure_replaces_task_result() -> None:
+    """Re-running a failed task overwrites task.result, doesn't keep the old one."""
+    task = Task(title="X", payload="exit 1", type=TaskType.BASH)
+    executor = default_executor()
+
+    with pytest.raises(RuntimeError):
+        executor.execute(task)
+    first_result = task.result
+    assert first_result is not None
+    assert first_result.status == TaskStatus.FAILED
+
+    # Repair: replace payload so the retry succeeds.
+    task.payload = "echo recovered"
+    executor.execute(task)
+
+    assert task.result is not first_result
+    assert task.result.status == TaskStatus.DONE
+    assert task.result.output.strip() == "recovered"

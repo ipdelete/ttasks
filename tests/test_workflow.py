@@ -271,3 +271,36 @@ def test_failure_terminates_run_without_hanging() -> None:
     elapsed = time.monotonic() - start
     # Should finish almost immediately; allow for executor overhead.
     assert elapsed < 2.0, f"run hung for {elapsed:.2f}s after failure"
+
+
+# ---- ledger as post-run view -------------------------------------------------
+
+
+def test_ledger_carries_results_after_run() -> None:
+    """After graph.run(), every executed task in the ledger has task.result set."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+
+    for task in graph.ledger:
+        assert task.result is not None
+        assert task.result.status == TaskStatus.DONE
+        assert task.result.output.strip() == task.title.lower()
+
+
+def test_blocked_task_has_no_result_after_run() -> None:
+    """A task whose deps failed never runs, so task.result stays None."""
+    a = _bash("A", "exit 1")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+
+    assert a.result is not None
+    assert a.result.status == TaskStatus.FAILED
+    assert b.result is None  # never executed
+    assert b.status == TaskStatus.PENDING

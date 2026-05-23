@@ -1,13 +1,8 @@
-r"""Executable demo: one shared ledger, two independent DAGs.
+r"""Executable demo: one shared ledger, two DAGs, results on the ledger.
 
-Graph alpha:           Graph beta:
-        X                     P
-        |                    / \
-        Y                   Q   R
-
-After running both graphs, the single shared TaskLedger contains all
-five tasks. The graphs themselves are independent — each runs on its
-own pool, neither knows about the other.
+After running both graphs, every task carries its own TaskResult. The
+ledger is the single post-run view — no futures, no dict-by-id, just
+walk the tasks.
 """
 
 import time
@@ -19,7 +14,7 @@ from workflow import TaskGraph
 
 
 def main() -> None:
-    """Run two graphs against one shared ledger; print the merged registry."""
+    """Build two DAGs against a shared ledger, run them, walk the ledger."""
     ledger = TaskLedger()
 
     # Graph alpha: X -> Y
@@ -38,19 +33,17 @@ def main() -> None:
     beta[q] = [p]
     beta[r] = [p]
 
-    print(f"alpha: {alpha}")
-    print(f"beta:  {beta}")
-    print(f"ledger before run: {len(ledger)} task(s)")
-
     executor = default_executor()
     start = time.monotonic()
     alpha.run(executor)
     beta.run(executor)
     elapsed = time.monotonic() - start
 
-    print(f"\nledger after run: {len(ledger)} task(s)")
+    # Single post-run view: walk the ledger, read each task's result.
     for task in ledger:
-        print(f"  {task.title}: status={task.status.value}")
+        output = task.result.output.strip() if task.result else "-"
+        print(f"  {task.title}  status={task.status.value:<9} output={output!r}")
+
     print(f"\nwall time: {elapsed:.2f}s")
 
 

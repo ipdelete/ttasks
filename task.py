@@ -1,9 +1,13 @@
 """Task domain model and state-machine rules."""
 
+from __future__ import annotations
+
+import subprocess
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import cast
 
 
 class TaskStatus(Enum):
@@ -56,6 +60,9 @@ class Task:
     _id: str = field(default_factory=lambda: str(uuid.uuid4()), repr=False)
     created_at: datetime = field(default_factory=datetime.now)
     _status: TaskStatus = field(default=TaskStatus.PENDING, init=False, repr=False)
+    # The most recent TaskResult attached to this task, set by TaskExecutor on
+    # every terminal path (DONE, FAILED, CANCELLED). None until first run.
+    result: TaskResult | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Validate task configuration after dataclass initialization."""
@@ -106,3 +113,39 @@ class Task:
     def __repr__(self):
         """Return a concise representation focused on identity and status."""
         return f"Task(id={self.id!r}, title={self.title!r}, status={self.status.value})"
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    """Normalized record of a single task execution.
+
+    Attached to Task.result by TaskExecutor on every terminal path so the
+    Task itself is the canonical post-run view. Frozen so a completed run
+    record cannot be mutated after the fact.
+    """
+
+    task_id: str
+    status: TaskStatus
+    output: str = ""
+    error: str | None = None
+    returncode: int | None = None
+    raw: object | None = None
+
+    @classmethod
+    def from_raw(cls, task: Task, raw: object) -> TaskResult:
+        """Normalize a handler return value into a TaskResult."""
+        if isinstance(raw, subprocess.CompletedProcess):
+            completed = cast("subprocess.CompletedProcess[str]", raw)
+            return cls(
+                task_id=task.id,
+                status=task.status,
+                output=completed.stdout or "",
+                error=completed.stderr or None,
+                returncode=completed.returncode,
+                raw=completed,
+            )
+
+        if isinstance(raw, str):
+            return cls(task_id=task.id, status=task.status, output=raw, raw=raw)
+
+        return cls(task_id=task.id, status=task.status, raw=raw)

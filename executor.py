@@ -5,9 +5,9 @@ import signal
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
-from task import Task, TaskStatus, TaskType
+from task import Task, TaskResult, TaskStatus, TaskType
 
 
 class TaskCancelled(RuntimeError):
@@ -71,37 +71,6 @@ class TaskContext:
             raise TaskCancelled(f"Task {self.id!r} was cancelled")
 
 
-@dataclass(frozen=True)
-class TaskResult:
-    """Normalized output returned by TaskExecutor.execute()."""
-
-    task_id: str
-    status: TaskStatus
-    output: str = ""
-    error: str | None = None
-    returncode: int | None = None
-    raw: object | None = None
-
-    @classmethod
-    def from_raw(cls, task: Task, raw: object) -> "TaskResult":
-        """Normalize a handler return value into a TaskResult."""
-        if isinstance(raw, subprocess.CompletedProcess):
-            completed = cast("subprocess.CompletedProcess[str]", raw)
-            return cls(
-                task_id=task.id,
-                status=task.status,
-                output=completed.stdout or "",
-                error=completed.stderr or None,
-                returncode=completed.returncode,
-                raw=completed,
-            )
-
-        if isinstance(raw, str):
-            return cls(task_id=task.id, status=task.status, output=raw, raw=raw)
-
-        return cls(task_id=task.id, status=task.status, raw=raw)
-
-
 TaskHandler = Callable[[TaskContext], Any]
 
 
@@ -150,13 +119,25 @@ class TaskExecutor:
             raw_result = handler(context)
             context.raise_if_cancelled()
             task.transition_to(TaskStatus.DONE)
-            return TaskResult.from_raw(task, raw_result)
-        except TaskCancelled:
+            result = TaskResult.from_raw(task, raw_result)
+            task.result = result
+            return result
+        except TaskCancelled as e:
+            task.result = TaskResult(
+                task_id=task.id, status=TaskStatus.CANCELLED, error=str(e)
+            )
             raise
         except Exception as e:
             if task.status == TaskStatus.CANCELLED:
-                raise TaskCancelled(f"Task {task.id!r} was cancelled") from e
+                cancelled = TaskCancelled(f"Task {task.id!r} was cancelled")
+                task.result = TaskResult(
+                    task_id=task.id, status=TaskStatus.CANCELLED, error=str(e)
+                )
+                raise cancelled from e
             task.transition_to(TaskStatus.FAILED, error=str(e))
+            task.result = TaskResult(
+                task_id=task.id, status=TaskStatus.FAILED, error=str(e)
+            )
             raise
 
     def _run_command(
