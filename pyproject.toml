@@ -21,6 +21,7 @@ addopts = [
     "--cov=executor",
     "--cov=ledger",
     "--cov=task",
+    "--cov=workflow",
     "--cov-report=term-missing",
 ]
 
