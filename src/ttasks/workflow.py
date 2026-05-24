@@ -12,7 +12,7 @@ from threading import Event, RLock
 
 from .executor import TaskExecutor
 from .ledger import TaskLedger
-from .task import Task
+from .task import Task, TaskStatus
 
 
 class TaskGraph:
@@ -26,6 +26,9 @@ class TaskGraph:
     def __init__(self, ledger: TaskLedger | None = None) -> None:
         self._ledger = ledger if ledger is not None else TaskLedger()
         self._deps: dict[str, list[str]] = {}
+        # Tasks that were skipped during the most recent run() because an
+        # upstream task failed. Cleared at the start of each run().
+        self._blocked: set[str] = set()
 
     # ---- mapping protocol ---------------------------------------------------
 
@@ -62,6 +65,47 @@ class TaskGraph:
         """The TaskLedger backing this graph."""
         return self._ledger
 
+    # ---- status views (post-run) --------------------------------------------
+
+    @property
+    def succeeded(self) -> list[Task]:
+        """Tasks in this graph whose status is DONE."""
+        return [t for t in self if t.status == TaskStatus.DONE]
+
+    @property
+    def failed(self) -> list[Task]:
+        """Tasks in this graph whose status is FAILED."""
+        return [t for t in self if t.status == TaskStatus.FAILED]
+
+    @property
+    def blocked(self) -> list[Task]:
+        """Tasks skipped during the most recent run() due to upstream failure.
+
+        Distinct from "PENDING because run() was never called": this list is
+        populated only by run() and reset on each call.
+        """
+        return [self._ledger[tid] for tid in self._blocked]
+
+    @property
+    def ok(self) -> bool:
+        """True iff every task in the graph succeeded."""
+        return len(self.succeeded) == len(self)
+
+    # ---- topology views -----------------------------------------------------
+
+    def roots(self) -> list[Task]:
+        """Tasks with no upstream dependencies."""
+        return [self._ledger[tid] for tid, ds in self._deps.items() if not ds]
+
+    def leaves(self) -> list[Task]:
+        """Tasks that no other task depends on."""
+        depended_on: set[str] = set()
+        for ds in self._deps.values():
+            depended_on.update(ds)
+        return [
+            self._ledger[tid] for tid in self._deps if tid not in depended_on
+        ]
+
     # ---- validation ---------------------------------------------------------
 
     def _validate(self) -> None:
@@ -94,20 +138,23 @@ class TaskGraph:
         self,
         executor: TaskExecutor,
         max_workers: int = 4,
-    ) -> dict[str, Future]:
-        """Execute the DAG. Blocks until done. Returns task_id -> Future.
+    ) -> "TaskGraph":
+        """Execute the DAG. Blocks until done. Returns self for chaining.
 
         Failure policy: if a task fails, every descendant is marked blocked
-        and never submitted; the run terminates instead of hanging.
+        and never submitted; the run terminates instead of hanging. Use
+        graph.failed and graph.blocked to inspect the outcome.
         """
         self._validate()
+        # Reset blocked state from any previous run.
+        self._blocked = set()
 
         # Empty graph: nothing to wait for. Return early to avoid deadlock.
         if not self._deps:
-            return {}
+            return self
 
         futures: dict[str, Future] = {}
-        blocked: set[str] = set()
+        blocked: set[str] = self._blocked
         lock = RLock()
         done = Event()
 
@@ -171,4 +218,4 @@ class TaskGraph:
 
             done.wait()
 
-        return futures
+        return self

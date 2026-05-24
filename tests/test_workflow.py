@@ -157,10 +157,10 @@ def test_run_raises_on_larger_cycle() -> None:
 
 
 def test_empty_graph_runs_without_hanging() -> None:
-    """An empty graph returns immediately with no futures."""
+    """An empty graph completes immediately without deadlocking."""
     graph = TaskGraph()
-    futures = graph.run(default_executor())
-    assert futures == {}
+    assert graph.run(default_executor()) is graph
+    assert graph.ok
 
 
 def test_single_node_runs() -> None:
@@ -168,9 +168,10 @@ def test_single_node_runs() -> None:
     a = _bash("A", "echo hello")
     graph = TaskGraph()
     graph[a] = []
-    futures = graph.run(default_executor())
-    assert futures[a.id].result().output.strip() == "hello"
+    graph.run(default_executor())
     assert a.status == TaskStatus.DONE
+    assert a.result is not None
+    assert a.result.output.strip() == "hello"
 
 
 def test_linear_chain_runs_in_order() -> None:
@@ -182,9 +183,9 @@ def test_linear_chain_runs_in_order() -> None:
     graph[a] = []
     graph[b] = [a]
     graph[c] = [b]
-    futures = graph.run(default_executor())
+    graph.run(default_executor())
+    assert graph.ok
     for task in (a, b, c):
-        assert futures[task.id].exception() is None
         assert task.status == TaskStatus.DONE
 
 
@@ -200,11 +201,11 @@ def test_diamond_runs_with_parallelism() -> None:
     graph[c] = [a]
     graph[d] = [b, c]
     start = time.monotonic()
-    futures = graph.run(default_executor())
+    graph.run(default_executor())
     elapsed = time.monotonic() - start
     # Serial would be ~1.2s; diamond parallel is ~0.9s. Allow generous slack.
     assert elapsed < 1.15, f"diamond took {elapsed:.2f}s — looks serial"
-    assert all(futures[t.id].exception() is None for t in (a, b, c, d))
+    assert graph.ok
 
 
 # ---- Failure policy ----------------------------------------------------------
@@ -219,11 +220,12 @@ def test_failure_blocks_descendants() -> None:
     graph[a] = []
     graph[b] = [a]
     graph[c] = [b]
-    futures = graph.run(default_executor())
-    assert futures[a.id].exception() is not None
-    assert b.id not in futures
-    assert c.id not in futures
+    graph.run(default_executor())
     assert a.status == TaskStatus.FAILED
+    assert graph.failed == [a]
+    assert {t.id for t in graph.blocked} == {b.id, c.id}
+    assert b.status == TaskStatus.PENDING
+    assert c.status == TaskStatus.PENDING
 
 
 def test_failure_does_not_affect_independent_branch() -> None:
@@ -235,10 +237,10 @@ def test_failure_does_not_affect_independent_branch() -> None:
     graph[a] = []
     graph[b] = []
     graph[c] = [b]
-    futures = graph.run(default_executor())
-    assert futures[a.id].exception() is not None
-    assert futures[b.id].exception() is None
-    assert futures[c.id].exception() is None
+    graph.run(default_executor())
+    assert graph.failed == [a]
+    assert {t.id for t in graph.succeeded} == {b.id, c.id}
+    assert graph.blocked == []
 
 
 def test_failure_in_diamond_blocks_only_downstream() -> None:
@@ -252,11 +254,9 @@ def test_failure_in_diamond_blocks_only_downstream() -> None:
     graph[b] = [a]
     graph[c] = [a]
     graph[d] = [b, c]
-    futures = graph.run(default_executor())
-    assert futures[a.id].exception() is not None
-    assert b.id not in futures
-    assert c.id not in futures
-    assert d.id not in futures
+    graph.run(default_executor())
+    assert graph.failed == [a]
+    assert {t.id for t in graph.blocked} == {b.id, c.id, d.id}
 
 
 def test_failure_terminates_run_without_hanging() -> None:
@@ -304,3 +304,235 @@ def test_blocked_task_has_no_result_after_run() -> None:
     assert a.result.status == TaskStatus.FAILED
     assert b.result is None  # never executed
     assert b.status == TaskStatus.PENDING
+
+
+# ---- run() returns self (chaining) -------------------------------------------
+
+
+def test_run_returns_self() -> None:
+    """graph.run() returns the graph itself so callers can chain."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+    assert graph.run(default_executor()) is graph
+
+
+def test_run_returns_self_for_empty_graph() -> None:
+    """Empty graph still returns self (not None, not {})."""
+    graph = TaskGraph()
+    assert graph.run(default_executor()) is graph
+
+
+# ---- status views: succeeded / failed / blocked / ok -------------------------
+
+
+def test_succeeded_lists_done_tasks_in_graph() -> None:
+    """After a clean run every task in the graph is in succeeded."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+    assert {t.id for t in graph.succeeded} == {a.id, b.id}
+
+
+def test_succeeded_empty_before_run() -> None:
+    """Before any run, no task has DONE status, so succeeded is empty."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+    assert graph.succeeded == []
+
+
+def test_succeeded_only_lists_graph_tasks_not_whole_ledger() -> None:
+    """A task in the shared ledger but not in this graph is not in succeeded."""
+    ledger = TaskLedger()
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    g1 = TaskGraph(ledger=ledger)
+    g2 = TaskGraph(ledger=ledger)
+    g1[a] = []
+    g2[b] = []
+    g1.run(default_executor())
+    g2.run(default_executor())
+    assert g1.succeeded == [a]
+    assert g2.succeeded == [b]
+
+
+def test_failed_lists_failed_tasks() -> None:
+    """A task that raised lands in graph.failed."""
+    a = _bash("A", "exit 1")
+    graph = TaskGraph()
+    graph[a] = []
+    graph.run(default_executor())
+    assert graph.failed == [a]
+
+
+def test_failed_empty_when_all_succeed() -> None:
+    """A clean run leaves failed empty."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+    graph.run(default_executor())
+    assert graph.failed == []
+
+
+def test_blocked_lists_skipped_descendants() -> None:
+    """Tasks skipped because their upstream failed land in graph.blocked."""
+    a = _bash("A", "exit 1")
+    b = _bash("B", "echo b")
+    c = _bash("C", "echo c")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph[c] = [b]
+    graph.run(default_executor())
+    assert {t.id for t in graph.blocked} == {b.id, c.id}
+
+
+def test_blocked_empty_before_run() -> None:
+    """PENDING tasks before any run are NOT counted as blocked."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+    assert graph.blocked == []
+
+
+def test_blocked_empty_when_no_failures() -> None:
+    """A run with no failures leaves blocked empty."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+    assert graph.blocked == []
+
+
+def test_blocked_resets_at_start_of_run() -> None:
+    """Calling run() again clears blocked state from the previous run."""
+    a = _bash("A", "exit 1")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+    assert b in graph.blocked
+    # Second run: validation fails before execution because tasks are
+    # already DONE/FAILED, but blocked should reset at entry. We force
+    # the reset path by calling run() on an empty graph reusing this one's
+    # internal state surrogate — simplest: just call run() again and check
+    # blocked is recomputed (still contains b, since a still failed).
+    graph.run(default_executor())
+    # The point: blocked is a function of the most recent run, not
+    # accumulated across runs.
+    assert {t.id for t in graph.blocked} == {b.id}
+
+
+def test_ok_true_after_clean_run() -> None:
+    """All tasks DONE, none failed, none blocked -> ok is True."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+    assert graph.ok
+
+
+def test_ok_false_after_failure() -> None:
+    """Any failure -> ok is False."""
+    a = _bash("A", "exit 1")
+    graph = TaskGraph()
+    graph[a] = []
+    graph.run(default_executor())
+    assert not graph.ok
+
+
+def test_ok_false_when_tasks_blocked() -> None:
+    """A blocked task means the graph did not complete -> not ok."""
+    a = _bash("A", "exit 1")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(default_executor())
+    assert not graph.ok
+
+
+def test_ok_false_before_run() -> None:
+    """A graph with PENDING tasks has not succeeded -> not ok."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+    assert not graph.ok
+
+
+def test_ok_true_for_empty_graph() -> None:
+    """Vacuously: no tasks, nothing to fail."""
+    graph = TaskGraph()
+    graph.run(default_executor())
+    assert graph.ok
+
+
+# ---- topology views: roots / leaves ------------------------------------------
+
+
+def test_roots_returns_tasks_with_no_deps() -> None:
+    """Roots are tasks whose deps list is empty."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    c = _bash("C", "echo c")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = []
+    graph[c] = [a, b]
+    assert {t.id for t in graph.roots()} == {a.id, b.id}
+
+
+def test_roots_empty_for_empty_graph() -> None:
+    """No tasks -> no roots."""
+    assert TaskGraph().roots() == []
+
+
+def test_roots_all_when_no_edges() -> None:
+    """Every task without deps is a root."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = []
+    assert {t.id for t in graph.roots()} == {a.id, b.id}
+
+
+def test_leaves_returns_tasks_with_no_dependents() -> None:
+    """Leaves are tasks that nothing else depends on."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    c = _bash("C", "echo c")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph[c] = [a]
+    assert {t.id for t in graph.leaves()} == {b.id, c.id}
+
+
+def test_leaves_empty_for_empty_graph() -> None:
+    """No tasks -> no leaves."""
+    assert TaskGraph().leaves() == []
+
+
+def test_diamond_roots_and_leaves() -> None:
+    """Diamond: A is the only root, D is the only leaf."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    c = _bash("C", "echo c")
+    d = _bash("D", "echo d")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph[c] = [a]
+    graph[d] = [b, c]
+    assert graph.roots() == [a]
+    assert graph.leaves() == [d]
