@@ -32,55 +32,53 @@
 
 <p>Read top-down. Items are ordered by priority, not by category. The first three tiers are the work plan; the user-API improvements section at the bottom is a closed track kept for reference.</p>
 
-<p><em>Last reviewed after commit <code>f4565c5</code>. Tier ordering reflects what unblocks what, cost-per-value, and what makes the library useful for the next plausible consumer.</em></p>
+<p><em>Last reviewed after commit <code>2aec595</code>. Tier ordering reflects what unblocks what, cost-per-value, and what makes the library useful for the next plausible consumer.</em></p>
 
-<h2>Tier 1 — do now (in this order)</h2>
+<h2>Recently shipped from Tier 1</h2>
 
-<h3>1. Timing on <code>TaskResult</code></h3>
-<p><strong>~1 hour. No design questions.</strong></p>
-<p>Add <code>started_at</code>, <code>finished_at</code>, <code>duration</code> to <code>TaskResult</code>; populate in <code>TaskExecutor.execute()</code> on every terminal path. Mechanical edits, ~3 new tests.</p>
-<p>Why first: cheapest meaningful win on the list. Immediately useful in <code>main.py</code> output and any future UI. Finishing something small first re-grooves the TDD rhythm before committing to the bigger Tier-1 items. The natural home (<code>TaskResult</code>) already exists, so there's no &ldquo;where does this live?&rdquo; question.</p>
+<h3>Timing on <code>TaskResult</code></h3>
+<p><strong>Status: shipped</strong> (commit <code>9179df0</code>).</p>
+<p><code>TaskResult</code> now records <code>started_at</code>, <code>finished_at</code>, and <code>duration</code> on every terminal execution path. Wall-clock timestamps support display and audit-style output; duration is measured with a monotonic clock for stable elapsed-time reporting.</p>
 
-<h3>2. Passing results between tasks</h3>
-<p><strong>~3 hours. One real design question.</strong></p>
-<p>Inside B's handler there's no clean way to read A's output. A handler receives a <code>TaskContext</code> containing only <code>task</code> and a cancellation event — no view of upstream results. <code>TaskGraph</code> ships a DAG runner without a way to plumb data through it.</p>
-<p>Design question: where do upstream results live? Two candidates:</p>
-<ul>
-  <li><code>TaskContext.upstream: dict[str, TaskResult]</code>, populated by the runner before dispatch. Handler reads <code>ctx.upstream[parent_id].output</code>. Runtime concern, runtime location.</li>
-  <li>Auto-injection into the task payload via templating. Task-definition concern, task-definition location.</li>
-</ul>
-<p>I lean toward <code>TaskContext</code> — plumbing is runtime mechanics, not task identity. After this lands, DAGs stop being demos and become workflows.</p>
+<h3>Passing upstream tasks between handlers</h3>
+<p><strong>Status: shipped</strong> (commit <code>89391fc</code>).</p>
+<p><code>TaskContext.upstream</code> exposes direct upstream task references keyed by task ID. <code>TaskGraph</code> populates those refs from its ledger before dispatch, so downstream handlers can read parent task metadata and <code>task.result</code> without closures or global state.</p>
+<p>The shipped shape is intentionally by task reference rather than a copied <code>dict[str, TaskResult]</code>. The ledger remains the canonical view. To make that safer, tasks reject normal public mutation once they reach <code>DONE</code>, while <code>FAILED</code> tasks remain mutable for repair and retry.</p>
 
-<h3>3. Event stream / subscriptions</h3>
-<p><strong>~5 hours. Real design.</strong></p>
-<p>The gateway. After <code>graph.run()</code> grew interesting mid-run behavior (multiple tasks transitioning, descendants getting blocked, parallel branches finishing at different moments), the only way to observe any of it is to wait for the blocking call to return. Once an event stream exists, streaming output, progress reporting, metrics, and any external interface (CLI, HTTP, TUI) all become viable without committing to one.</p>
-<p>Probable shape: a small <code>EventBus</code> on <code>TaskLedger</code> or <code>TaskExecutor</code> with <code>subscribe(callback)</code>; emit on every status transition. Real design question: filter language (by task id, by status, by graph?). I'd start with &ldquo;everything, consumer filters&rdquo; and add specifics on demand.</p>
-<p>After Tier 1 the library goes from &ldquo;good DAG runner&rdquo; to &ldquo;DAG runner you can build a real UI against.&rdquo;</p>
+<h3>Event stream / subscriptions</h3>
+<p><strong>Status: shipped</strong> (commit <code>2aec595</code>).</p>
+<p><code>TaskExecutor</code> now owns an <code>EventBus</code>. Consumers subscribe with <code>executor.events.subscribe(callback)</code> and receive <code>TaskEvent</code> objects for <code>STARTED</code>, <code>SUCCEEDED</code>, <code>FAILED</code>, and <code>CANCELLED</code>. Events include the live task ref, previous status, current status, timestamp, and error text when relevant.</p>
+<p>Subscriber exceptions are recorded on <code>executor.events.errors</code> and do not fail task execution. <code>main.py</code> now demonstrates the event stream while running the sample graphs.</p>
+
+<h2>Tier 1 — do now</h2>
+
+<p>The original Tier 1 is complete. The next best work is to use the event stream for live task IO and handler-reported progress.</p>
+
+<h3>1. Streaming output</h3>
+<p><strong>~3 hours. Depends on the event stream, now available.</strong></p>
+<p>Handlers emit stdout/stderr chunks via the event bus instead of buffering until completion. For long shell jobs that's the difference between &ldquo;is it hung?&rdquo; and a live tail.</p>
+<p>Design questions: event shape for output chunks, stdout vs stderr tagging, whether built-in subprocess handlers should switch from <code>communicate()</code> to incremental pipe reads, and how much output should still be retained in <code>TaskResult</code>.</p>
+
+<h3>2. Progress reporting from handlers</h3>
+<p><strong>~1 hour. Depends on the event stream, now available.</strong></p>
+<p>Handlers call something like <code>ctx.emit_progress(percent, message)</code>; the event flows through the same bus. This is cheap now that <code>TaskEvent</code> / <code>EventBus</code> exist, but it needs a small decision on whether progress is a new <code>TaskEventType.PROGRESS</code> with optional fields on <code>TaskEvent</code> or a separate event dataclass.</p>
 
 <h2>Tier 2 — do next</h2>
 
-<p>These either depend on Tier 1 or build naturally on it. Order within the tier is roughly cost-ascending.</p>
+<p>These are still useful and mostly independent, but they become more valuable after live events exist. Order within the tier is roughly cost-ascending.</p>
 
-<h3>4. Streaming output</h3>
-<p><strong>~3 hours. Depends on the event stream.</strong></p>
-<p>Handlers emit chunks via the event bus instead of buffering until done. For long shell jobs that's the difference between &ldquo;is it hung?&rdquo; and a live tail. The event-bus dependency is hard — without it you'd need polling, which is the wrong shape.</p>
-
-<h3>5. Async submit-and-forget on the executor</h3>
+<h3>3. Async submit-and-forget on the executor</h3>
 <p><strong>~2 hours. Self-contained.</strong></p>
 <p><code>executor.execute(task)</code> already covers the sync single-task case. What's missing is <code>executor.submit(task) -&gt; Future</code> — submit, get a Future immediately, collect later. Today the workaround is wrapping a single task in a one-node TaskGraph, which works but is heavy.</p>
 <p>Pool lifecycle is the only real design question: lazy creation on first <code>submit()</code>, explicit <code>close()</code>, or context-manager protocol? I lean lazy + explicit close + idempotent on <code>__del__</code>.</p>
 
-<h3>6. Single-task retry policy</h3>
+<h3>4. Single-task retry policy</h3>
 <p><strong>~2 hours.</strong></p>
 <p><code>RetryPolicy(max_attempts, backoff)</code> on the executor or per-task; <code>FAILED → RUNNING</code> is already allowed in the state machine, so nothing structural is in the way. <em>Graph-level retry</em> (rerun only the failed subgraph, unblock its descendants) is a richer feature and lives in Tier 3 — revisit once single-task retry exists and you've felt the gap.</p>
 
-<h3>7. Graceful drain / shutdown on the executor</h3>
+<h3>5. Graceful drain / shutdown on the executor</h3>
 <p><strong>~2 hours. Becomes needed once submit-and-forget exists.</strong></p>
 <p>&ldquo;Stop accepting new work, let running tasks finish.&rdquo; Once an executor owns a thread pool, callers need a way to wind it down without losing in-flight work.</p>
-
-<h3>8. Progress reporting from handlers</h3>
-<p><strong>~1 hour. Depends on the event stream.</strong></p>
-<p>Handlers call <code>ctx.emit_progress(percent, message)</code>; the event flows through the same bus. Cheap once Tier 1 is done.</p>
 
 <h2>Tier 3 — can wait until something forces the issue</h2>
 
@@ -99,11 +97,11 @@
   <li><strong>Retention policy.</strong> When do DONE/CANCELLED tasks leave the ledger? Becomes pointed only after persistence lands. With shared ledgers, eviction needs to know whether any graph still references the task.</li>
   <li><strong>Bulk ledger ops</strong> (<code>cancel_all_pending</code>, <code>retry_all_failed</code>). Sugar over comprehensions; add when somebody asks.</li>
   <li><strong>Ledger-level filtering</strong> <strong>[position]</strong>: intentionally left to consumer comprehensions (<code>[t for t in ledger if t.status == TaskStatus.FAILED]</code>). The asymmetry with <code>graph.succeeded</code>/<code>failed</code>/<code>blocked</code> reflects the layering — graphs report on their slice, the ledger is just storage.</li>
-  <li><strong>Updating a task after creation</strong> <strong>[position]</strong>: the runner mutates <code>task.status</code> and <code>task.result</code> during execution; callers do not mutate tasks after construction. &ldquo;Immutable Task&rdquo; is the caller-side contract, not a hard invariant. Worth restating in the README.</li>
+  <li><strong>Updating a task after creation</strong> <strong>[position]</strong>: callers can still repair <code>FAILED</code> tasks before retry, but <code>DONE</code> tasks now reject normal public mutation. That gives upstream task refs a safer by-reference story without making the whole task model frozen.</li>
   <li><strong>Backpressure</strong> / global concurrency caps / per-type pools / queueing &amp; prioritization. Matter at scale; <code>graph.run(max_workers=N)</code> is enough for now.</li>
   <li><strong>At-least-once vs at-most-once semantics.</strong> Becomes important once persistence + retries exist.</li>
-  <li><strong>System-wide metrics / counters.</strong> Per-graph counts already available via <code>graph.succeeded</code>/<code>failed</code>/<code>blocked</code>; system-wide waits for the event stream + a consumer that wants them.</li>
-  <li><strong>Logs and history per task</strong> beyond a single <code>error</code> string. Will become natural once the event stream is in place — events <em>are</em> the history.</li>
+  <li><strong>System-wide metrics / counters.</strong> Per-graph counts already available via <code>graph.succeeded</code>/<code>failed</code>/<code>blocked</code>; the event stream now makes system-wide aggregation straightforward once a consumer wants it.</li>
+  <li><strong>Logs and history per task</strong> beyond a single <code>error</code> string. The event stream provides lifecycle history; richer per-task logs become natural after streaming output lands.</li>
 </ul>
 
 <h2>Tier 4 — probably out of scope for this library</h2>
@@ -126,6 +124,9 @@
   <li><strong>Dependencies between tasks.</strong> Addressed by <code>TaskGraph</code> in <code>ttasks.workflow</code>. Fan-out, fan-in, diamonds, halt-on-failure with blocked-descendant propagation.</li>
   <li><strong>Per-graph counts &amp; filtering.</strong> <code>graph.succeeded</code>, <code>graph.failed</code>, <code>graph.blocked</code>, <code>graph.ok</code> as properties; <code>graph.roots()</code>, <code>graph.leaves()</code> as methods.</li>
   <li><strong>Sync single-task execution.</strong> <code>executor.execute(task)</code> runs one task, sets <code>task.result</code>, returns the <code>TaskResult</code>.</li>
+  <li><strong>Timed results.</strong> <code>TaskResult</code> includes <code>started_at</code>, <code>finished_at</code>, and monotonic-clock <code>duration</code>.</li>
+  <li><strong>Upstream task refs.</strong> <code>TaskContext.upstream</code> exposes direct dependency task refs keyed by task ID; <code>DONE</code> tasks reject normal public mutation.</li>
+  <li><strong>Task event stream.</strong> <code>TaskExecutor.events</code> publishes <code>STARTED</code>, <code>SUCCEEDED</code>, <code>FAILED</code>, and <code>CANCELLED</code> events through <code>EventBus</code>.</li>
   <li><strong>Per-graph concurrency knob.</strong> <code>graph.run(max_workers=N)</code>.</li>
 </ul>
 
@@ -156,7 +157,7 @@
   <li><strong>Build backend</strong>: hatchling, declared in <code>pyproject.toml</code>. <code>uv build</code> now produces a wheel without extra config.</li>
   <li><strong>TaskGraph location</strong>: stays inside the package as <code>ttasks.workflow</code> rather than being split into a separate distribution. The SDK-vs-consumer distinction is preserved at the submodule level, not the install level. One <code>pip install ttasks</code>, one library.</li>
   <li><strong>Internal imports</strong>: relative (<code>from .task import &hellip;</code>) inside the package. Idiomatic and survives a future rename of the package.</li>
-  <li><strong>Public surface</strong>: 10 names exported — <code>Task</code>, <code>TaskStatus</code>, <code>TaskType</code>, <code>TaskResult</code>, <code>TaskLedger</code>, <code>TaskExecutor</code>, <code>TaskContext</code>, <code>TaskCancelled</code>, <code>make_default_executor</code>, <code>TaskGraph</code>. Nothing trimmed; handler authors get <code>TaskContext</code> from the top level without having to know about <code>ttasks.executor</code>.</li>
+  <li><strong>Public surface at the time</strong>: 10 names exported — <code>Task</code>, <code>TaskStatus</code>, <code>TaskType</code>, <code>TaskResult</code>, <code>TaskLedger</code>, <code>TaskExecutor</code>, <code>TaskContext</code>, <code>TaskCancelled</code>, <code>make_default_executor</code>, <code>TaskGraph</code>. The current surface has grown with error and event types; the contract test remains the source of truth.</li>
   <li><strong>Public-API contract test</strong>: <code>tests/test_public_api.py</code> pins <code>__all__</code> against an expected set, checks every name resolves, and asserts identity against the canonical submodule object. Adding or removing a public name without updating the contract fails immediately.</li>
   <li><strong>PyPI publication</strong>: not a current goal, but the structure is ready. Future work: package description, classifiers, README polish.</li>
 </ul>
@@ -201,7 +202,7 @@
   <li><strong>Auto-build inside <code>graph.run()</code></strong>: hides where handler configuration happens; makes that config harder to discover.</li>
   <li><strong>Literal <code>default_executor_factory()</code></strong>: matches the user request more directly but reads as Java-ish in Python; <code>make_</code> carries factory semantics idiomatically.</li>
 </ul>
-<p>No deprecation alias — internal repo, no external consumers. All call sites (main.py, ~3 test files, <code>__init__.py</code> re-export, public-API contract test) updated in one pass. Public surface stays at 10 names; only one was renamed. 125 tests pass, 100% coverage.</p>
+<p>No deprecation alias — internal repo, no external consumers. All call sites (main.py, ~3 test files, <code>__init__.py</code> re-export, public-API contract test) updated in one pass. At that point the public surface stayed at 10 names and only one was renamed. 125 tests passed with 100% coverage.</p>
 
 <h2>Open</h2>
 
