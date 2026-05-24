@@ -1,5 +1,5 @@
 """Optional durable storage backends for ttasks."""
 
-from .sqlite import SQLiteTaskLedger
+from .sqlite import SQLiteGraphLedger, SQLiteTaskLedger
 
-__all__ = ["SQLiteTaskLedger"]
+__all__ = ["SQLiteGraphLedger", "SQLiteTaskLedger"]

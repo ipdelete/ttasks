@@ -13,15 +13,8 @@ flat re-export surface, not from submodules.
 import time
 from pathlib import Path
 
-from ttasks import (
-    InMemoryGraphLedger,
-    Task,
-    TaskEvent,
-    TaskGraph,
-    TaskType,
-    make_default_executor,
-)
-from ttasks.storage.sqlite import SQLiteTaskLedger
+from ttasks import Task, TaskEvent, TaskGraph, TaskType, make_default_executor
+from ttasks.storage.sqlite import SQLiteGraphLedger, SQLiteTaskLedger
 
 
 def _bash(title: str, payload: str) -> Task:
@@ -71,7 +64,7 @@ def main() -> None:
     ledger_path = Path("ttasks-demo.db")
     ledger_path.unlink(missing_ok=True)
     ledger = SQLiteTaskLedger(ledger_path)
-    graphs = InMemoryGraphLedger()
+    graphs = SQLiteGraphLedger(ledger_path, tasks=ledger)
     executor = make_default_executor()
     unsubscribe_print = executor.events.subscribe(_print_event)
     unsubscribe_save = executor.events.subscribe(lambda event: ledger.save(event.task))
@@ -124,7 +117,7 @@ def main() -> None:
         unsubscribe_save()
     elapsed = time.monotonic() - start
 
-    for graph in graphs:
+    for graph in [alpha, beta, gamma]:
         _print_graph(graph)
 
     # The shared ledger is the union: every task across every graph.

@@ -1,4 +1,4 @@
-"""SQLite-backed durable task ledgers."""
+"""SQLite-backed durable task and graph ledgers."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ttasks.task import Task, TaskResult, TaskStatus, TaskType
+from ttasks.workflow import TaskGraph
 
 _SCHEMA_VERSION = "1"
 
@@ -188,6 +189,43 @@ class SQLiteTaskLedger:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS graphs (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS graph_tasks (
+                    graph_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    is_finally INTEGER NOT NULL DEFAULT 0,
+                    is_optional INTEGER NOT NULL DEFAULT 0,
+                    position INTEGER NOT NULL,
+                    PRIMARY KEY(graph_id, task_id),
+                    FOREIGN KEY(graph_id) REFERENCES graphs(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS graph_dependencies (
+                    graph_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    dependency_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    PRIMARY KEY(graph_id, task_id, dependency_id),
+                    FOREIGN KEY(graph_id) REFERENCES graphs(id) ON DELETE CASCADE,
+                    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY(dependency_id) REFERENCES tasks(id) ON DELETE CASCADE
+                )
+                """
+            )
+            connection.execute(
+                """
                 INSERT OR IGNORE INTO metadata(key, value)
                 VALUES ('schema_version', ?)
                 """,
@@ -199,6 +237,181 @@ class SQLiteTaskLedger:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT id FROM tasks ORDER BY created_at, id"
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+
+class SQLiteGraphLedger:
+    """Dictionary-like durable registry for TaskGraph objects backed by SQLite."""
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        tasks: SQLiteTaskLedger | None = None,
+    ) -> None:
+        """Open or create a SQLite graph ledger at path."""
+        self.path = Path(path)
+        self.tasks = tasks if tasks is not None else SQLiteTaskLedger(self.path)
+        self.tasks._init_schema()
+
+    def save(self, graph: TaskGraph) -> None:
+        """Persist graph under its own ID."""
+        self[graph.id] = graph
+
+    def __setitem__(self, graph_id: str, graph: TaskGraph) -> None:
+        """Store and durably save a graph under its own ID."""
+        if not isinstance(graph, TaskGraph):
+            raise TypeError(f"Expected TaskGraph, got {type(graph).__name__}")
+        if graph_id != graph.id:
+            raise ValueError("graph_id must match graph.id")
+
+        graph_tasks = list(graph)
+        dependency_ids = {
+            task.id: [dependency.id for dependency in graph[task]]
+            for task in graph_tasks
+        }
+        finally_ids = set(graph._finally)
+        optional_ids = set(graph._optional)
+
+        for task in graph_tasks:
+            self.tasks.save(task)
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO graphs (id, title, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    created_at = excluded.created_at
+                """,
+                (graph.id, graph.title, graph.created_at.isoformat()),
+            )
+            connection.execute(
+                "DELETE FROM graph_dependencies WHERE graph_id = ?",
+                (graph.id,),
+            )
+            connection.execute(
+                "DELETE FROM graph_tasks WHERE graph_id = ?",
+                (graph.id,),
+            )
+            for position, task in enumerate(graph_tasks):
+                connection.execute(
+                    """
+                    INSERT INTO graph_tasks (
+                        graph_id, task_id, is_finally, is_optional, position
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        graph.id,
+                        task.id,
+                        int(task.id in finally_ids),
+                        int(task.id in optional_ids),
+                        position,
+                    ),
+                )
+            for task in graph_tasks:
+                for position, dependency_id in enumerate(dependency_ids[task.id]):
+                    connection.execute(
+                        """
+                        INSERT INTO graph_dependencies (
+                            graph_id, task_id, dependency_id, position
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (graph.id, task.id, dependency_id, position),
+                    )
+
+    def __getitem__(self, graph_id: str) -> TaskGraph:
+        """Return the graph for graph_id or raise KeyError if it is missing."""
+        with self._connect() as connection:
+            graph_row = connection.execute(
+                "SELECT * FROM graphs WHERE id = ?",
+                (graph_id,),
+            ).fetchone()
+            if graph_row is None:
+                raise KeyError(graph_id)
+            task_rows = connection.execute(
+                """
+                SELECT * FROM graph_tasks
+                WHERE graph_id = ?
+                ORDER BY position, task_id
+                """,
+                (graph_id,),
+            ).fetchall()
+            dependency_rows = connection.execute(
+                """
+                SELECT * FROM graph_dependencies
+                WHERE graph_id = ?
+                ORDER BY task_id, position, dependency_id
+                """,
+                (graph_id,),
+            ).fetchall()
+
+        graph = TaskGraph(ledger=self.tasks, title=str(graph_row["title"]))
+        object.__setattr__(graph, "_id", str(graph_row["id"]))
+        graph.created_at = datetime.fromisoformat(str(graph_row["created_at"]))
+
+        dependencies: dict[str, list[str]] = {
+            str(row["task_id"]): [] for row in task_rows
+        }
+        for row in dependency_rows:
+            dependencies[str(row["task_id"])].append(str(row["dependency_id"]))
+
+        for row in task_rows:
+            task_id = str(row["task_id"])
+            task = self.tasks[task_id]
+            graph._ledger[task.id] = task
+            graph._deps[task.id] = dependencies[task.id]
+            if bool(row["is_finally"]):
+                graph._finally.add(task.id)
+            if bool(row["is_optional"]):
+                graph._optional.add(task.id)
+
+        return graph
+
+    def __iter__(self) -> Iterator[TaskGraph]:
+        """Iterate over stored graph snapshots by creation time, then ID."""
+        for graph_id in self._graph_ids():
+            yield self[graph_id]
+
+    def __len__(self) -> int:
+        """Return the number of graphs currently stored."""
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) AS count FROM graphs").fetchone()
+        return int(row["count"])
+
+    def __delitem__(self, graph_id: str) -> None:
+        """Remove a graph from the ledger without deleting its tasks."""
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM graphs WHERE id = ?", (graph_id,))
+            if cursor.rowcount == 0:
+                raise KeyError(graph_id)
+
+    def __contains__(self, graph_id: str) -> bool:
+        """Return whether graph_id is present in the ledger."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM graphs WHERE id = ?",
+                (graph_id,),
+            ).fetchone()
+        return row is not None
+
+    def __repr__(self) -> str:
+        """Return a concise representation with the number of stored graphs."""
+        return f"SQLiteGraphLedger({len(self)} graphs)"
+
+    def _connect(self) -> sqlite3.Connection:
+        """Return a SQLite connection configured for this ledger."""
+        return self.tasks._connect()
+
+    def _graph_ids(self) -> list[str]:
+        """Return graph IDs in stable ledger iteration order."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM graphs ORDER BY created_at, id"
             ).fetchall()
         return [str(row["id"]) for row in rows]
 

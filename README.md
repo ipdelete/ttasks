@@ -139,6 +139,34 @@ assert graphs[graph.id] is graph
 - `graph.title`
 - `graph.created_at`
 
+### SQLiteGraphLedger
+
+Use `SQLiteGraphLedger` to persist graph metadata, task membership, dependency
+edges, and finally-task metadata. It shares a SQLite database with
+`SQLiteTaskLedger` and saves graph member tasks when a graph is saved.
+
+```python
+from ttasks.storage.sqlite import SQLiteGraphLedger, SQLiteTaskLedger
+
+tasks = SQLiteTaskLedger("ttasks.db")
+graphs = SQLiteGraphLedger("ttasks.db", tasks=tasks)
+
+graph = TaskGraph(ledger=tasks, title="build")
+graph[build] = []
+graph[test] = [build]
+
+graphs[graph.id] = graph  # saves immediately
+restored = graphs[graph.id]
+
+assert restored.id == graph.id
+```
+
+`graphs.save(graph)` is an explicit alias for `graphs[graph.id] = graph`.
+Deleting a graph removes graph metadata and edges but leaves shared tasks in the
+task ledger. Run-scoped views such as `graph.blocked` and `graph.errors` are not
+persisted yet; task terminal states and results are restored through the task
+ledger.
+
 ### TaskExecutor
 
 `TaskExecutor` dispatches tasks to handlers registered by `TaskType`.
