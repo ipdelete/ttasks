@@ -11,16 +11,17 @@ flat re-export surface, not from submodules.
 """
 
 import time
+from pathlib import Path
 
 from ttasks import (
     InMemoryGraphLedger,
     Task,
     TaskEvent,
     TaskGraph,
-    InMemoryTaskLedger,
     TaskType,
     make_default_executor,
 )
+from ttasks.storage.sqlite import SQLiteTaskLedger
 
 
 def _bash(title: str, payload: str) -> Task:
@@ -67,10 +68,13 @@ def _print_event(event: TaskEvent) -> None:
 
 def main() -> None:
     """Build two DAGs against a shared ledger and inspect them via the graph."""
-    ledger = InMemoryTaskLedger()
+    ledger_path = Path("ttasks-demo.db")
+    ledger_path.unlink(missing_ok=True)
+    ledger = SQLiteTaskLedger(ledger_path)
     graphs = InMemoryGraphLedger()
     executor = make_default_executor()
-    unsubscribe = executor.events.subscribe(_print_event)
+    unsubscribe_print = executor.events.subscribe(_print_event)
+    unsubscribe_save = executor.events.subscribe(lambda event: ledger.save(event.task))
 
     # Graph alpha: X -> Y -> Z (linear; Z is a tool-capable agent task).
     x = _bash("X", "echo x")
@@ -116,7 +120,8 @@ def main() -> None:
         beta.run(executor)
         gamma.run(executor)
     finally:
-        unsubscribe()
+        unsubscribe_print()
+        unsubscribe_save()
     elapsed = time.monotonic() - start
 
     for graph in graphs:

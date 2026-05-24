@@ -13,7 +13,7 @@ from datetime import datetime
 from threading import Event, RLock
 
 from .executor import TaskExecutor
-from .ledger import InMemoryTaskLedger
+from .ledger import InMemoryTaskLedger, TaskLedgerProtocol
 from .task import Task, TaskStatus
 
 
@@ -27,7 +27,7 @@ class TaskGraph:
 
     def __init__(
         self,
-        ledger: InMemoryTaskLedger | None = None,
+        ledger: TaskLedgerProtocol | None = None,
         *,
         title: str = "",
     ) -> None:
@@ -118,8 +118,8 @@ class TaskGraph:
         return self._id
 
     @property
-    def ledger(self) -> InMemoryTaskLedger:
-        """The InMemoryTaskLedger backing this graph."""
+    def ledger(self) -> TaskLedgerProtocol:
+        """The task ledger backing this graph."""
         return self._ledger
 
     # ---- status views (post-run) --------------------------------------------

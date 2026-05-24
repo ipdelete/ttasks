@@ -94,6 +94,30 @@ assert ledger[task.id] is task
 
 The ledger enforces that tasks are stored under their own immutable IDs.
 
+### SQLiteTaskLedger
+
+Use `SQLiteTaskLedger` when task snapshots should survive process restart.
+It has the same dictionary-like save/load shape as `InMemoryTaskLedger`, but
+stores snapshots in a SQLite database file.
+
+```python
+from ttasks.storage.sqlite import SQLiteTaskLedger
+
+ledger = SQLiteTaskLedger("ttasks.db")
+ledger[task.id] = task  # saves immediately
+
+restored = ledger[task.id]
+
+assert restored.id == task.id
+assert restored is not task
+```
+
+`ledger.save(task)` is an explicit alias for `ledger[task.id] = task`.
+Loaded tasks are detached snapshots: mutating a task after saving does not
+write through automatically, so assign it again or call `save()` after later
+changes. `TaskResult.raw` is intentionally not persisted because raw handler
+objects are not generally serializable.
+
 ### InMemoryGraphLedger
 
 `InMemoryGraphLedger` is the graph-level companion to `InMemoryTaskLedger`. It stores

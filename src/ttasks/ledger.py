@@ -3,12 +3,28 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from .task import Task
 
 if TYPE_CHECKING:
     from .workflow import TaskGraph
+
+
+class TaskLedgerProtocol(Protocol):
+    """Structural protocol for task ledgers consumed by TaskGraph."""
+
+    def __setitem__(self, task_id: str, task: Task) -> None:
+        """Store a task under task_id."""
+
+    def __getitem__(self, task_id: str) -> Task:
+        """Return the task for task_id."""
+
+    def __iter__(self) -> Iterator[Task]:
+        """Iterate over stored tasks."""
+
+    def __contains__(self, task_id: str) -> bool:
+        """Return whether task_id is present."""
 
 
 class InMemoryTaskLedger:
