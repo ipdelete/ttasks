@@ -419,6 +419,101 @@ def test_failure_terminates_run_without_hanging() -> None:
     assert elapsed < 2.0, f"run hung for {elapsed:.2f}s after failure"
 
 
+# ---- Finally tasks -----------------------------------------------------------
+
+
+def test_add_finally_runs_after_failed_and_blocked_tasks() -> None:
+    """A finally task runs after deps are inactive, even if they did not pass."""
+    a = _bash("A", "")
+    b = _bash("B", "")
+    report = _bash("Report", "")
+    executor = TaskExecutor()
+
+    def handler(context) -> str:
+        """Fail A; report should still see both upstream refs."""
+        if context.id == a.id:
+            raise RuntimeError("boom")
+        assert context.id == report.id
+        assert set(context.upstream) == {a.id, b.id}
+        assert context.upstream[a.id].status == TaskStatus.FAILED
+        assert context.upstream[b.id].status == TaskStatus.PENDING
+        return "report"
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.add_finally(report, after=[a, b])
+
+    graph.run(executor)
+
+    assert a.status == TaskStatus.FAILED
+    assert b in graph.blocked
+    assert report.status == TaskStatus.DONE
+    assert report.result is not None
+    assert report.result.output == "report"
+    assert not graph.ok
+
+
+def test_optional_finally_failure_does_not_make_graph_not_ok() -> None:
+    """Optional reporting task failures are visible but ignored by ok."""
+    a = _bash("A", "")
+    report = _bash("Report", "")
+    executor = TaskExecutor()
+
+    def handler(context) -> str:
+        """Let A pass but fail the optional finalizer."""
+        if context.id == a.id:
+            return "a"
+        raise RuntimeError("copilot unavailable")
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph[a] = []
+    graph.add_finally(report, after=[a], required=False)
+
+    graph.run(executor)
+
+    assert a.status == TaskStatus.DONE
+    assert report.status == TaskStatus.FAILED
+    assert report in graph.failed
+    assert report.id in graph.errors
+    assert graph.ok
+
+
+def test_required_finally_failure_makes_graph_not_ok() -> None:
+    """Required finally tasks participate in graph.ok like normal tasks."""
+    a = _bash("A", "")
+    report = _bash("Report", "")
+    executor = TaskExecutor()
+
+    def handler(context) -> str:
+        """Let A pass but fail the required finalizer."""
+        if context.id == a.id:
+            return "a"
+        raise RuntimeError("report failed")
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph[a] = []
+    graph.add_finally(report, after=[a])
+
+    graph.run(executor)
+
+    assert report.status == TaskStatus.FAILED
+    assert not graph.ok
+
+
+def test_add_finally_rejects_non_bool_required() -> None:
+    """required is intentionally strict to avoid truthy policy surprises."""
+    graph = TaskGraph()
+    report = _bash("Report", "")
+    required: Any = "no"
+
+    with pytest.raises(TypeError, match="required must be a bool"):
+        graph.add_finally(report, after=[], required=required)
+
+
 # ---- ledger as post-run view -------------------------------------------------
 
 

@@ -46,6 +46,10 @@ class TaskGraph:
         # Exceptions raised by submitted task futures during the most recent
         # run, keyed by task id. Cleared at the start of each run().
         self._errors: dict[str, BaseException] = {}
+        # Finally tasks run after their dependencies finish, fail, cancel, or
+        # become blocked. Optional tasks report failures without making ok false.
+        self._finally: set[str] = set()
+        self._optional: set[str] = set()
 
     # ---- mapping protocol ---------------------------------------------------
 
@@ -53,6 +57,33 @@ class TaskGraph:
         """Register `task` in the ledger and record its upstream dependencies."""
         self._ledger[task.id] = task
         self._deps[task.id] = [d.id for d in deps]
+        self._finally.discard(task.id)
+        self._optional.discard(task.id)
+
+    def add_finally(
+        self,
+        task: Task,
+        after: Iterable[Task],
+        *,
+        required: bool = True,
+    ) -> None:
+        """Register a task that runs after dependencies are no longer active.
+
+        Unlike normal graph dependencies, ``after`` tasks do not need to
+        succeed. The finally task becomes ready once every listed task has
+        succeeded, failed, been cancelled, been blocked, or raised an executor
+        error. If ``required`` is false, failures from this task are visible in
+        graph views but do not make :attr:`ok` false.
+        """
+        if not isinstance(required, bool):
+            raise TypeError("required must be a bool")
+        self._ledger[task.id] = task
+        self._deps[task.id] = [d.id for d in after]
+        self._finally.add(task.id)
+        if required:
+            self._optional.discard(task.id)
+        else:
+            self._optional.add(task.id)
 
     def __getitem__(self, task: Task) -> list[Task]:
         """Return the upstream Task objects that `task` depends on."""
@@ -126,8 +157,13 @@ class TaskGraph:
 
     @property
     def ok(self) -> bool:
-        """True iff every task in the graph succeeded without run errors."""
-        return len(self.succeeded) == len(self) and not self._errors
+        """True iff every required task succeeded without run errors."""
+        required = [tid for tid in self._deps if tid not in self._optional]
+        return (
+            all(self._ledger[tid].status == TaskStatus.DONE for tid in required)
+            and not any(tid not in self._optional for tid in self._errors)
+            and not any(tid not in self._optional for tid in self._blocked)
+        )
 
     # ---- topology views -----------------------------------------------------
 
@@ -215,8 +251,24 @@ class TaskGraph:
                     and futures[tid].exception() is None
                 )
 
+            def inactive(tid: str) -> bool:
+                """Return whether tid can no longer change in this run."""
+                task = self._ledger[tid]
+                return (
+                    task.status in {
+                        TaskStatus.DONE,
+                        TaskStatus.FAILED,
+                        TaskStatus.CANCELLED,
+                    }
+                    or tid in blocked
+                    or tid in self._errors
+                    or (tid in futures and futures[tid].done())
+                )
+
             def ready(tid: str) -> bool:
                 """Return whether all upstream dependencies are satisfied."""
+                if tid in self._finally:
+                    return all(inactive(d) for d in self._deps[tid])
                 return all(succeeded(d) for d in self._deps[tid])
 
             def dep_failed_or_blocked(tid: str) -> bool:
@@ -271,7 +323,7 @@ class TaskGraph:
                             or task.status == TaskStatus.DONE
                         ):
                             continue
-                        if dep_failed_or_blocked(tid):
+                        if tid not in self._finally and dep_failed_or_blocked(tid):
                             blocked.add(tid)
                             changed = True
                         elif ready(tid):

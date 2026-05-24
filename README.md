@@ -387,6 +387,30 @@ def handler(context):
 Only direct dependencies are included. If a task needs an earlier ancestor, add
 that ancestor as an explicit graph dependency.
 
+### Finally tasks
+
+Use `add_finally()` for reporting or cleanup tasks that should run after other
+tasks are no longer active, even when those tasks failed or were blocked:
+
+```python
+recommend = Task(
+    title="Recommend next action",
+    payload="Summarize preflight output",
+    type=TaskType.PROMPT,
+)
+
+graph.add_finally(
+    recommend,
+    after=[lint, test, docs],
+    required=False,
+)
+```
+
+A finally task receives the listed `after` tasks through `context.upstream`, just
+like normal dependencies. `required=False` makes failures visible in graph views
+without making `graph.ok` false, which is useful for optional reporting tasks
+such as AI recommendations or artifact collection.
+
 ## Documentation
 
 API documentation is generated from docstrings with `pdoc` and published to
