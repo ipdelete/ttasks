@@ -160,17 +160,23 @@ class TaskGraph:
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
 
-            def ready(tid: str) -> bool:
-                return all(
-                    d in futures
-                    and futures[d].done()
-                    and futures[d].exception() is None
-                    for d in self._deps[tid]
+            def succeeded(tid: str) -> bool:
+                task = self._ledger[tid]
+                if task.status == TaskStatus.DONE:
+                    return True
+                return (
+                    tid in futures
+                    and futures[tid].done()
+                    and futures[tid].exception() is None
                 )
+
+            def ready(tid: str) -> bool:
+                return all(succeeded(d) for d in self._deps[tid])
 
             def dep_failed_or_blocked(tid: str) -> bool:
                 return any(
                     d in blocked
+                    or self._ledger[d].status == TaskStatus.CANCELLED
                     or (
                         d in futures
                         and futures[d].done()
@@ -179,42 +185,54 @@ class TaskGraph:
                     for d in self._deps[tid]
                 )
 
+            def finished(tid: str) -> bool:
+                return (
+                    self._ledger[tid].status == TaskStatus.DONE
+                    or tid in blocked
+                    or (tid in futures and futures[tid].done())
+                )
+
             def submit(tid: str) -> None:
                 fut = pool.submit(executor.execute, self._ledger[tid])
                 futures[tid] = fut
                 fut.add_done_callback(lambda f, t=tid: on_finish(t, f))
 
+            def schedule() -> None:
+                # Propagate blocking transitively and submit tasks whose deps
+                # are satisfied. Already-DONE tasks are treated as satisfied so
+                # graph reruns and newly-added descendants do not deadlock.
+                changed = True
+                while changed:
+                    changed = False
+                    for tid in self._deps:
+                        task = self._ledger[tid]
+                        if (
+                            tid in futures
+                            or tid in blocked
+                            or task.status == TaskStatus.DONE
+                        ):
+                            continue
+                        if dep_failed_or_blocked(tid):
+                            blocked.add(tid)
+                            changed = True
+                        elif ready(tid):
+                            if task.can_transition_to(TaskStatus.RUNNING):
+                                submit(tid)
+                            else:
+                                blocked.add(tid)
+                            changed = True
+
+                # Exit when every task is done, has finished this run, or is blocked.
+                if all(finished(tid) for tid in self._deps):
+                    done.set()
+
             def on_finish(_tid: str, _fut: Future) -> None:
                 with lock:
-                    # Propagate blocking transitively: any task whose deps
-                    # include a failed-or-blocked task becomes blocked.
-                    changed = True
-                    while changed:
-                        changed = False
-                        for tid in self._deps:
-                            if tid in futures or tid in blocked:
-                                continue
-                            if dep_failed_or_blocked(tid):
-                                blocked.add(tid)
-                                changed = True
+                    schedule()
 
-                    # Submit any task whose deps are all satisfied.
-                    for tid, ds in self._deps.items():
-                        if tid in futures or tid in blocked:
-                            continue
-                        if ds and ready(tid):
-                            submit(tid)
-
-                    # Exit when every task is either done or blocked.
-                    finished = sum(1 for f in futures.values() if f.done())
-                    if finished + len(blocked) == len(self._deps):
-                        done.set()
-
-            # Kick off the roots (tasks with no dependencies).
+            # Kick off every task whose dependencies are already satisfied.
             with lock:
-                for tid, ds in self._deps.items():
-                    if not ds:
-                        submit(tid)
+                schedule()
 
             done.wait()
 

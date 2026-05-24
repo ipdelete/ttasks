@@ -299,6 +299,26 @@ def test_handler_cancellation_after_return_raises_task_cancelled() -> None:
     assert task.status == TaskStatus.CANCELLED
 
 
+def test_handler_task_cancelled_exception_marks_task_cancelled() -> None:
+    """A handler raising TaskCancelled directly leaves the task terminal."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+
+    def handler(context: TaskContext) -> None:
+        """Raise cancellation without mutating the task directly."""
+        raise TaskCancelled("worker cancelled")
+
+    executor.register(TaskType.BASH, handler)
+
+    with pytest.raises(TaskCancelled, match="worker cancelled"):
+        executor.execute(task)
+
+    assert task.status == TaskStatus.CANCELLED
+    assert task.result is not None
+    assert task.result.status == TaskStatus.CANCELLED
+    assert task.result.error == "worker cancelled"
+
+
 def test_handler_error_after_cancellation_raises_task_cancelled() -> None:
     """Handler errors are reported as cancellation if task was cancelled first."""
     executor = TaskExecutor()
@@ -537,6 +557,7 @@ def test_retry_after_failure_replaces_task_result() -> None:
     task.payload = "echo recovered"
     executor.execute(task)
 
+    assert task.result is not None
     assert task.result is not first_result
     assert task.result.status == TaskStatus.DONE
     assert task.result.output.strip() == "recovered"

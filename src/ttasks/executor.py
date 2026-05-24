@@ -11,7 +11,12 @@ from .task import Task, TaskResult, TaskStatus, TaskType
 
 
 class TaskCancelled(RuntimeError):
-    """Raised when execution is stopped because a task was cancelled."""
+    """Signal that task execution was cancelled.
+
+    Handlers should not mutate Task lifecycle state directly. They may raise
+    TaskCancelled to cooperatively abort; TaskExecutor owns the transition to
+    CANCELLED and records the terminal TaskResult.
+    """
 
 
 @dataclass(frozen=True)
@@ -104,7 +109,9 @@ class TaskExecutor:
 
         Execution always moves through RUNNING first. Successful handlers move
         the task to DONE; failing handlers move it to FAILED unless cancellation
-        happened while the handler was in flight.
+        happened while the handler was in flight. Handlers should signal
+        cooperative cancellation by raising TaskCancelled rather than mutating
+        task state directly; the executor performs the CANCELLED transition.
         """
         if not task.can_transition_to(TaskStatus.RUNNING):
             raise ValueError(f"Cannot execute task with status {task.status.value!r}")
@@ -123,6 +130,8 @@ class TaskExecutor:
             task.result = result
             return result
         except TaskCancelled as e:
+            if task.status != TaskStatus.CANCELLED:
+                task.cancel()
             task.result = TaskResult(
                 task_id=task.id, status=TaskStatus.CANCELLED, error=str(e)
             )

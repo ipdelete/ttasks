@@ -419,15 +419,59 @@ def test_blocked_resets_at_start_of_run() -> None:
     graph[b] = [a]
     graph.run(make_default_executor())
     assert b in graph.blocked
-    # Second run: validation fails before execution because tasks are
-    # already DONE/FAILED, but blocked should reset at entry. We force
-    # the reset path by calling run() on an empty graph reusing this one's
-    # internal state surrogate — simplest: just call run() again and check
-    # blocked is recomputed (still contains b, since a still failed).
+
     graph.run(make_default_executor())
+
     # The point: blocked is a function of the most recent run, not
     # accumulated across runs.
     assert {t.id for t in graph.blocked} == {b.id}
+
+
+def test_clean_graph_can_be_run_again_without_blocking_done_dependencies() -> None:
+    """A rerun treats already-DONE tasks as satisfied, not failed futures."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+
+    graph.run(make_default_executor())
+    graph.run(make_default_executor())
+
+    assert graph.ok
+    assert graph.blocked == []
+    assert graph.failed == []
+    assert a.status == TaskStatus.DONE
+    assert b.status == TaskStatus.DONE
+
+
+def test_done_dependency_allows_pending_descendant_to_run() -> None:
+    """A task added after its dependency completed can still run."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph.run(make_default_executor())
+
+    graph[b] = [a]
+    graph.run(make_default_executor())
+
+    assert graph.ok
+    assert graph.blocked == []
+    assert b.status == TaskStatus.DONE
+
+
+def test_cancelled_root_is_blocked_instead_of_hanging() -> None:
+    """A non-runnable root task terminates the run instead of deadlocking."""
+    a = _bash("A", "echo a")
+    a.cancel()
+    graph = TaskGraph()
+    graph[a] = []
+
+    graph.run(make_default_executor())
+
+    assert graph.blocked == [a]
+    assert not graph.ok
 
 
 def test_ok_true_after_clean_run() -> None:
