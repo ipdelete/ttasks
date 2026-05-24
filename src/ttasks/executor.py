@@ -4,9 +4,10 @@ import os
 import signal
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any
 
 from .task import Task, TaskResult, TaskStatus, TaskType
@@ -47,16 +48,31 @@ class TaskTimeoutError(TimeoutError):
         self.completed = completed
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class TaskContext:
     """Read-only execution view passed to task handlers.
 
     The executor owns lifecycle transitions. Handlers receive this context so
-    they can inspect task data and cancellation state without being given the
-    public Task state-machine mutation API.
+    they can inspect task data, cancellation state, and direct upstream task
+    refs without being given the public Task state-machine mutation API for the
+    current task.
     """
 
     __task: Task
+    __upstream: Mapping[str, Task]
+
+    def __init__(
+        self,
+        task: Task,
+        upstream: Mapping[str, Task] | None = None,
+    ) -> None:
+        """Create a context for task with read-only upstream task refs."""
+        object.__setattr__(self, "_TaskContext__task", task)
+        object.__setattr__(
+            self,
+            "_TaskContext__upstream",
+            MappingProxyType(dict(upstream or {})),
+        )
 
     @property
     def id(self) -> str:
@@ -97,6 +113,11 @@ class TaskContext:
     def cancelled(self) -> bool:
         """Return whether cancellation has been requested for the task."""
         return self.status == TaskStatus.CANCELLED
+
+    @property
+    def upstream(self) -> Mapping[str, Task]:
+        """Return direct upstream task refs keyed by task ID."""
+        return self.__upstream
 
     def raise_if_cancelled(self) -> None:
         """Raise TaskCancelled if cancellation has been requested."""
@@ -140,8 +161,16 @@ class TaskExecutor:
         if process is not None and process.poll() is None:
             self._terminate_process(process)
 
-    def execute(self, task: Task) -> TaskResult:
+    def execute(
+        self,
+        task: Task,
+        upstream: Mapping[str, Task] | None = None,
+    ) -> TaskResult:
         """Execute task with its registered handler.
+
+        upstream contains direct dependency task refs keyed by task ID. Single
+        task execution normally leaves it empty; TaskGraph populates it from
+        the graph ledger before submitting each non-root task.
 
         Execution always moves through RUNNING first. Returning from a handler
         means success and moves the task to DONE; raising from a handler means
@@ -170,20 +199,21 @@ class TaskExecutor:
             """Return finish time and duration for a terminal TaskResult."""
             return datetime.now(), time.monotonic() - started_monotonic
 
-        context = TaskContext(task)
+        context = TaskContext(task, upstream=upstream)
         try:
             raw_result = handler(context)
             context.raise_if_cancelled()
-            task.transition_to(TaskStatus.DONE)
             finished_at, duration = result_timing()
             result = TaskResult.from_raw(
                 task,
                 raw_result,
+                status=TaskStatus.DONE,
                 started_at=started_at,
                 finished_at=finished_at,
                 duration=duration,
             )
             task.result = result
+            task.transition_to(TaskStatus.DONE)
             return result
         except TaskCancelled as e:
             if task.status != TaskStatus.CANCELLED:

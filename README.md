@@ -44,7 +44,9 @@ task = Task(
 ```
 
 Task status is read-only from the outside. Use `transition_to()` for explicit
-state-machine transitions or `cancel()` for cancellation.
+state-machine transitions or `cancel()` for cancellation. Once a task reaches
+`DONE`, normal public field assignment is rejected so completed tasks can be
+safely shared by reference with downstream handlers.
 
 Valid lifecycle states are:
 
@@ -108,6 +110,13 @@ Handler contract:
 - raising `TaskCancelled` means cancellation
 - raising any other exception means failure
 - handlers should not mutate task lifecycle state directly
+- `context.upstream` exposes direct upstream task refs keyed by task ID
+
+For single-task execution, upstream refs can be passed manually:
+
+```python
+executor.execute(child_task, upstream={parent_task.id: parent_task})
+```
 
 The default executor registers built-in handlers for:
 
@@ -230,6 +239,19 @@ Executor/setup errors raised by submitted futures are available in
 
 Already-`DONE` tasks count as satisfied dependencies, so a graph can be rerun or
 extended after partial completion.
+
+When a graph submits a task, its handler receives direct dependency task refs in
+`context.upstream`. The refs come from the graph ledger and are keyed by task ID:
+
+```python
+def handler(context):
+    parent = context.upstream[build.id]
+    assert parent.result is not None
+    return parent.result.output.upper()
+```
+
+Only direct dependencies are included. If a task needs an earlier ancestor, add
+that ancestor as an explicit graph dependency.
 
 ## Development
 

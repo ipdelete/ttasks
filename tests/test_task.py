@@ -1,10 +1,11 @@
 """Tests for Task validation and state-machine behavior."""
 
+from datetime import datetime
 from typing import Any
 
 import pytest
 
-from ttasks.task import Task, TaskStatus, TaskType
+from ttasks.task import Task, TaskResult, TaskStatus, TaskType
 
 
 def test_type_must_be_task_type() -> None:
@@ -140,6 +141,36 @@ def test_cancel_preserves_previous_error() -> None:
     assert task.error == "boom"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("title", "Changed"),
+        ("description", "Changed"),
+        ("payload", "echo changed"),
+        ("timeout", 1.0),
+        ("error", "changed"),
+        (
+            "result",
+            TaskResult(
+                task_id="replacement",
+                status=TaskStatus.DONE,
+                started_at=datetime.now(),
+                finished_at=datetime.now(),
+                duration=0.0,
+            ),
+        ),
+    ],
+)
+def test_done_tasks_reject_public_field_mutation(field: str, value: object) -> None:
+    """DONE tasks are immutable to normal public attribute assignment."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.DONE)
+
+    with pytest.raises(AttributeError, match="DONE tasks are immutable"):
+        setattr(task, field, value)
+
+
 def test_invalid_transition_preserves_error() -> None:
     """A rejected transition does not mutate status or error."""
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
@@ -151,6 +182,19 @@ def test_invalid_transition_preserves_error() -> None:
 
     assert task.status == TaskStatus.FAILED
     assert task.error == "boom"
+
+
+def test_failed_tasks_remain_mutable_for_retry() -> None:
+    """FAILED tasks remain editable so callers can repair and retry them."""
+    task = Task(title="Example", payload="exit 1", type=TaskType.BASH)
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.FAILED, error="boom")
+
+    task.payload = "echo recovered"
+    task.error = None
+
+    assert task.payload == "echo recovered"
+    assert task.error is None
 
 
 @pytest.mark.parametrize(

@@ -224,9 +224,17 @@ class TaskGraph:
                     or (tid in futures and futures[tid].done())
                 )
 
+            def upstream_tasks(tid: str) -> dict[str, Task]:
+                """Return direct upstream task refs for tid from the ledger."""
+                return {dep_id: self._ledger[dep_id] for dep_id in self._deps[tid]}
+
             def submit(tid: str) -> None:
                 """Submit tid to the thread pool and register its callback."""
-                fut = pool.submit(executor.execute, self._ledger[tid])
+                fut = pool.submit(
+                    executor.execute,
+                    self._ledger[tid],
+                    upstream_tasks(tid),
+                )
                 futures[tid] = fut
                 fut.add_done_callback(lambda f, t=tid: on_finish(t, f))
 

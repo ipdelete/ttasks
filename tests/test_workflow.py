@@ -164,6 +164,62 @@ def test_run_raises_on_larger_cycle() -> None:
 # ---- Execution ---------------------------------------------------------------
 
 
+def test_graph_passes_direct_upstream_task_refs() -> None:
+    """Handlers receive direct upstream tasks from the graph ledger."""
+    a = _bash("A", "")
+    b = _bash("B", "")
+    executor = TaskExecutor()
+
+    def handler(context) -> str:
+        """Return output using direct upstream task refs."""
+        if context.id == a.id:
+            assert context.upstream == {}
+            return "a"
+        assert context.upstream[a.id] is a
+        assert context.upstream[a.id] is graph.ledger[a.id]
+        assert context.upstream[a.id].result is not None
+        return context.upstream[a.id].result.output.upper()
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+
+    graph.run(executor)
+
+    assert b.result is not None
+    assert b.result.output == "A"
+
+
+def test_graph_passes_only_direct_upstream_task_refs() -> None:
+    """Handlers see direct dependencies, not every transitive ancestor."""
+    a = _bash("A", "")
+    b = _bash("B", "")
+    c = _bash("C", "")
+    executor = TaskExecutor()
+
+    def handler(context) -> str:
+        """Assert upstream visibility follows direct graph edges."""
+        if context.id == a.id:
+            return "a"
+        if context.id == b.id:
+            assert set(context.upstream) == {a.id}
+            return "b"
+        assert set(context.upstream) == {b.id}
+        assert a.id not in context.upstream
+        return "c"
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph[c] = [b]
+
+    graph.run(executor)
+
+    assert graph.ok
+
+
 def test_empty_graph_runs_without_hanging() -> None:
     """An empty graph completes immediately without deadlocking."""
     graph = TaskGraph()

@@ -48,7 +48,20 @@ def test_task_context_exposes_read_only_task_view() -> None:
     assert context.timeout == 1.5
     assert context.status == TaskStatus.PENDING
     assert context.cancelled is False
+    assert context.upstream == {}
     context.raise_if_cancelled()
+
+
+def test_task_context_exposes_read_only_upstream_task_refs() -> None:
+    """TaskContext exposes upstream task refs through a read-only mapping."""
+    parent = Task(title="Parent", payload="echo parent", type=TaskType.BASH)
+    child = Task(title="Child", payload="echo child", type=TaskType.BASH)
+    context = TaskContext(child, upstream={parent.id: parent})
+    upstream: Any = context.upstream
+
+    assert context.upstream[parent.id] is parent
+    with pytest.raises(TypeError):
+        upstream["other"] = child
 
 
 def test_register_rejects_non_task_type() -> None:
@@ -67,6 +80,25 @@ def test_register_rejects_non_callable_handler() -> None:
 
     with pytest.raises(TypeError, match="handler must be callable"):
         executor.register(TaskType.BASH, handler)
+
+
+def test_execute_passes_upstream_task_refs_to_handler() -> None:
+    """execute() passes upstream task refs into the handler context."""
+    executor = TaskExecutor()
+    parent = Task(title="Parent", payload="", type=TaskType.BASH)
+    child = Task(title="Child", payload="", type=TaskType.BASH)
+
+    def handler(context: TaskContext) -> str:
+        """Assert the handler sees the provided upstream task."""
+        assert context.upstream[parent.id] is parent
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+
+    result = executor.execute(child, upstream={parent.id: parent})
+
+    assert result.output == "ok"
+    assert child.status == TaskStatus.DONE
 
 
 def test_execute_moves_task_through_running_to_done() -> None:

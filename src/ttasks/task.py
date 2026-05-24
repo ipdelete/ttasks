@@ -46,6 +46,8 @@ class Task:
 
     status is intentionally exposed as a read-only property. Use transition_to()
     or cancel() to mutate it so invalid state transitions cannot be bypassed.
+    Once a task reaches DONE, normal public attribute assignment is rejected so
+    completed upstream tasks can be safely shared by reference.
 
     timeout=None is intentional and means no automatic timeout is applied;
     callers should set a positive timeout for bounded subprocess execution.
@@ -63,6 +65,15 @@ class Task:
     # The most recent TaskResult attached to this task, set by TaskExecutor on
     # every terminal path (DONE, FAILED, CANCELLED). None until first run.
     result: TaskResult | None = field(default=None, init=False, repr=False)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Reject normal public mutation after the task reaches DONE."""
+        if (
+            not name.startswith("_")
+            and getattr(self, "_status", None) == TaskStatus.DONE
+        ):
+            raise AttributeError("DONE tasks are immutable")
+        super().__setattr__(name, value)
 
     def __post_init__(self) -> None:
         """Validate task configuration after dataclass initialization."""
@@ -102,8 +113,8 @@ class Task:
             )
             raise ValueError(message)
 
-        self._status = status
         self.error = error
+        self._status = status
 
     def cancel(self) -> None:
         """Cancel the task without discarding any existing error detail.
@@ -146,6 +157,7 @@ class TaskResult:
         task: Task,
         raw: object,
         *,
+        status: TaskStatus,
         started_at: datetime,
         finished_at: datetime,
         duration: float,
@@ -155,7 +167,7 @@ class TaskResult:
             completed = cast("subprocess.CompletedProcess[str]", raw)
             return cls(
                 task_id=task.id,
-                status=task.status,
+                status=status,
                 started_at=started_at,
                 finished_at=finished_at,
                 duration=duration,
@@ -168,7 +180,7 @@ class TaskResult:
         if isinstance(raw, str):
             return cls(
                 task_id=task.id,
-                status=task.status,
+                status=status,
                 started_at=started_at,
                 finished_at=finished_at,
                 duration=duration,
@@ -178,7 +190,7 @@ class TaskResult:
 
         return cls(
             task_id=task.id,
-            status=task.status,
+            status=status,
             started_at=started_at,
             finished_at=finished_at,
             duration=duration,
