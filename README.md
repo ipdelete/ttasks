@@ -93,6 +93,27 @@ assert ledger[task.id] is task
 
 The ledger enforces that tasks are stored under their own immutable IDs.
 
+### GraphLedger
+
+`GraphLedger` is the graph-level companion to `TaskLedger`. It stores
+`TaskGraph` objects under their own immutable graph IDs.
+
+```python
+from ttasks import GraphLedger, TaskGraph
+
+graphs = GraphLedger()
+graph = TaskGraph(title="build")
+graphs[graph.id] = graph
+
+assert graphs[graph.id] is graph
+```
+
+`TaskGraph` also records display metadata:
+
+- `graph.id`
+- `graph.title`
+- `graph.created_at`
+
 ### TaskExecutor
 
 `TaskExecutor` dispatches tasks to handlers registered by `TaskType`.
@@ -238,16 +259,18 @@ the transition to `CANCELLED` and records the terminal `TaskResult`.
 registered in the graph before `run()`.
 
 ```python
-from ttasks import TaskGraph, Task, TaskType, make_default_executor
+from ttasks import GraphLedger, TaskGraph, Task, TaskType, make_default_executor
 
 build = Task(title="Build", payload="echo build", type=TaskType.BASH)
 test = Task(title="Test", payload="echo test", type=TaskType.BASH)
 package = Task(title="Package", payload="echo package", type=TaskType.BASH)
 
-graph = TaskGraph()
+graphs = GraphLedger()
+graph = TaskGraph(title="build pipeline")
 graph[build] = []
 graph[test] = [build]
 graph[package] = [test]
+graphs[graph.id] = graph
 
 graph.run(make_default_executor())
 

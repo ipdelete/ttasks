@@ -13,6 +13,7 @@ flat re-export surface, not from submodules.
 import time
 
 from ttasks import (
+    GraphLedger,
     Task,
     TaskEvent,
     TaskGraph,
@@ -27,11 +28,14 @@ def _bash(title: str, payload: str) -> Task:
     return Task(title=title, type=TaskType.BASH, payload=payload)
 
 
-def _print_graph(name: str, graph: TaskGraph) -> None:
+def _print_graph(graph: TaskGraph) -> None:
     """Show topology + outcome for one graph."""
     roots = ", ".join(t.title for t in graph.roots()) or "(none)"
     leaves = ", ".join(t.title for t in graph.leaves()) or "(none)"
-    print(f"\n  {name}: {len(graph)} tasks  roots=[{roots}]  leaves=[{leaves}]")
+    print(
+        f"\n  {graph.title}: {len(graph)} tasks  "
+        f"roots=[{roots}]  leaves=[{leaves}]"
+    )
     print(f"     ok={graph.ok}  "
           f"succeeded={len(graph.succeeded)}  "
           f"failed={len(graph.failed)}  "
@@ -54,31 +58,35 @@ def _print_event(event: TaskEvent) -> None:
 def main() -> None:
     """Build two DAGs against a shared ledger and inspect them via the graph."""
     ledger = TaskLedger()
+    graphs = GraphLedger()
     executor = make_default_executor()
     unsubscribe = executor.events.subscribe(_print_event)
 
     # Graph alpha: X -> Y (linear, both succeed).
     x = _bash("X", "echo x")
     y = _bash("Y", "echo y")
-    alpha = TaskGraph(ledger=ledger)
+    alpha = TaskGraph(ledger=ledger, title="alpha")
     alpha[x] = []
     alpha[y] = [x]
+    graphs[alpha.id] = alpha
 
     # Graph beta: P -> {Q, R} (diamond top half, all succeed).
     p = _bash("P", "echo p")
     q = _bash("Q", "echo q")
     r = _bash("R", "echo r")
-    beta = TaskGraph(ledger=ledger)
+    beta = TaskGraph(ledger=ledger, title="beta")
     beta[p] = []
     beta[q] = [p]
     beta[r] = [p]
+    graphs[beta.id] = beta
 
     # Graph gamma: F fails, G is blocked. Demonstrates the blocked view.
     f = _bash("F", "exit 1")
     g = _bash("G", "echo g")
-    gamma = TaskGraph(ledger=ledger)
+    gamma = TaskGraph(ledger=ledger, title="gamma")
     gamma[f] = []
     gamma[g] = [f]
+    graphs[gamma.id] = gamma
 
     # run() returns the graph itself, so calls are chainable.
     start = time.monotonic()
@@ -90,13 +98,12 @@ def main() -> None:
         unsubscribe()
     elapsed = time.monotonic() - start
 
-    _print_graph("alpha", alpha)
-    _print_graph("beta", beta)
-    _print_graph("gamma", gamma)
+    for graph in graphs:
+        _print_graph(graph)
 
     # The shared ledger is the union: every task across every graph.
     print(f"\n  shared ledger holds {len(ledger)} tasks "
-          f"across {3} graphs")
+          f"across {len(graphs)} graphs")
     print(f"\nwall time: {elapsed:.2f}s")
 
 

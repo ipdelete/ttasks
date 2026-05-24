@@ -6,8 +6,10 @@ through a TaskExecutor on a ThreadPoolExecutor. Nothing about Task,
 TaskLedger, or TaskExecutor needs to change to support DAGs.
 """
 
+import uuid
 from collections.abc import Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from threading import Event, RLock
 
 from .executor import TaskExecutor
@@ -23,8 +25,18 @@ class TaskGraph:
     the graph registers it in the ledger.
     """
 
-    def __init__(self, ledger: TaskLedger | None = None) -> None:
+    def __init__(
+        self,
+        ledger: TaskLedger | None = None,
+        *,
+        title: str = "",
+    ) -> None:
         """Create a graph backed by ledger, or by a fresh TaskLedger."""
+        if not isinstance(title, str):
+            raise TypeError("title must be a str")
+        self._id = str(uuid.uuid4())
+        self.title = title
+        self.created_at = datetime.now()
         self._ledger = ledger if ledger is not None else TaskLedger()
         self._deps: dict[str, list[str]] = {}
         # Tasks skipped during the most recent run() because an upstream task
@@ -68,6 +80,11 @@ class TaskGraph:
         return f"TaskGraph({len(self)} tasks, edges=[{edges}])"
 
     # ---- accessors ----------------------------------------------------------
+
+    @property
+    def id(self) -> str:
+        """Return the immutable graph identity."""
+        return self._id
 
     @property
     def ledger(self) -> TaskLedger:

@@ -1,8 +1,14 @@
-"""In-memory task ledger."""
+"""In-memory task and graph ledgers."""
+
+from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from .task import Task
+
+if TYPE_CHECKING:
+    from .workflow import TaskGraph
 
 
 class TaskLedger:
@@ -51,3 +57,49 @@ class TaskLedger:
     def __repr__(self) -> str:
         """Return a concise representation with the number of stored tasks."""
         return f"TaskLedger({len(self._tasks)} tasks)"
+
+
+class GraphLedger:
+    """Dictionary-like registry for graphs keyed by their own graph IDs."""
+
+    def __init__(self):
+        """Create an empty graph ledger."""
+        self._graphs: dict[str, TaskGraph] = {}
+
+    def __setitem__(self, graph_id: str, graph: TaskGraph) -> None:
+        """Store a graph under its own ID.
+
+        The explicit graph_id argument keeps dictionary-style syntax available,
+        while validation prevents the ledger from disagreeing with graph.id.
+        """
+        from .workflow import TaskGraph
+
+        if not isinstance(graph, TaskGraph):
+            raise TypeError(f"Expected TaskGraph, got {type(graph).__name__}")
+        if graph_id != graph.id:
+            raise ValueError("graph_id must match graph.id")
+        self._graphs[graph_id] = graph
+
+    def __getitem__(self, graph_id: str) -> TaskGraph:
+        """Return the graph for graph_id or raise KeyError if it is missing."""
+        return self._graphs[graph_id]
+
+    def __iter__(self) -> Iterator[TaskGraph]:
+        """Iterate over stored graphs in insertion order."""
+        return iter(self._graphs.values())
+
+    def __len__(self) -> int:
+        """Return the number of graphs currently stored."""
+        return len(self._graphs)
+
+    def __delitem__(self, graph_id: str) -> None:
+        """Remove a graph from the ledger entirely."""
+        del self._graphs[graph_id]
+
+    def __contains__(self, graph_id: str) -> bool:
+        """Return whether graph_id is present in the ledger."""
+        return graph_id in self._graphs
+
+    def __repr__(self) -> str:
+        """Return a concise representation with the number of stored graphs."""
+        return f"GraphLedger({len(self._graphs)} graphs)"

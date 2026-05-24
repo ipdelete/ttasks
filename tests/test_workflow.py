@@ -1,6 +1,8 @@
 """Tests for TaskGraph: mapping protocol, validation, execution, failure."""
 
 import time
+from datetime import datetime
+from typing import Any
 
 import pytest
 
@@ -13,6 +15,45 @@ from ttasks.workflow import TaskGraph
 def _bash(title: str, payload: str) -> Task:
     """Shorthand for a bash task."""
     return Task(title=title, type=TaskType.BASH, payload=payload)
+
+
+# ---- Graph identity ----------------------------------------------------------
+
+
+def test_graph_has_read_only_id() -> None:
+    """TaskGraph has an immutable identity."""
+    graph = TaskGraph()
+    graph_id = graph.id
+
+    attr = "id"
+    with pytest.raises(AttributeError):
+        setattr(graph, attr, "new-id")
+
+    assert graph.id == graph_id
+
+
+def test_graph_accepts_title() -> None:
+    """TaskGraph stores display title metadata."""
+    graph = TaskGraph(title="Build")
+
+    assert graph.title == "Build"
+
+
+def test_graph_rejects_non_string_title() -> None:
+    """TaskGraph title must be a string."""
+    title: Any = 42
+
+    with pytest.raises(TypeError, match="title must be a str"):
+        TaskGraph(title=title)
+
+
+def test_graph_created_at_defaults_to_now() -> None:
+    """TaskGraph records when it was created."""
+    before = datetime.now()
+    graph = TaskGraph()
+    after = datetime.now()
+
+    assert before <= graph.created_at <= after
 
 
 # ---- Mapping protocol --------------------------------------------------------
@@ -93,6 +134,14 @@ def test_constructor_uses_provided_ledger() -> None:
     """A ledger passed in is held by identity, not copied."""
     ledger = TaskLedger()
     graph = TaskGraph(ledger=ledger)
+    assert graph.ledger is ledger
+
+
+def test_constructor_accepts_positional_ledger() -> None:
+    """The existing positional ledger constructor form still works."""
+    ledger = TaskLedger()
+    graph = TaskGraph(ledger)
+
     assert graph.ledger is ledger
 
 

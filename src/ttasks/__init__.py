@@ -14,12 +14,13 @@ from .executor import (
     TaskTimeoutError,
     make_default_executor,
 )
-from .ledger import TaskLedger
+from .ledger import GraphLedger, TaskLedger
 from .task import Task, TaskResult, TaskStatus, TaskType
 from .workflow import TaskGraph
 
 __all__ = [
     "EventBus",
+    "GraphLedger",
     "Task",
     "TaskCancelled",
     "TaskContext",
