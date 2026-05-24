@@ -1,8 +1,18 @@
 """Tests for Task validation and state-machine behavior."""
 
+from typing import Any
+
 import pytest
 
 from ttasks.task import Task, TaskStatus, TaskType
+
+
+def test_type_must_be_task_type() -> None:
+    """Tasks reject non-TaskType type values at construction time."""
+    task_type: Any = "bash"
+
+    with pytest.raises(TypeError, match="type must be a TaskType"):
+        Task(title="Example", payload="echo hi", type=task_type)
 
 
 def test_timeout_must_be_positive() -> None:
@@ -63,6 +73,26 @@ def test_status_is_read_only() -> None:
     attr = "status"
     with pytest.raises(AttributeError):
         setattr(task, attr, TaskStatus.DONE)
+
+    assert task.status == TaskStatus.PENDING
+
+
+def test_can_transition_to_rejects_non_task_status() -> None:
+    """can_transition_to reports a clean TypeError for invalid status values."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    status: Any = "done"
+
+    with pytest.raises(TypeError, match="status must be a TaskStatus"):
+        task.can_transition_to(status)
+
+
+def test_transition_to_rejects_non_task_status() -> None:
+    """transition_to reports a clean TypeError for invalid status values."""
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    status: Any = "done"
+
+    with pytest.raises(TypeError, match="status must be a TaskStatus"):
+        task.transition_to(status)
 
     assert task.status == TaskStatus.PENDING
 

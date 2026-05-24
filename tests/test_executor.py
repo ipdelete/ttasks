@@ -5,6 +5,7 @@ import signal
 import subprocess
 import threading
 import time
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -12,8 +13,10 @@ import pytest
 from ttasks.executor import (
     TaskCancelled,
     TaskContext,
+    TaskExecutionError,
     TaskExecutor,
     TaskResult,
+    TaskTimeoutError,
     make_default_executor,
 )
 from ttasks.task import Task, TaskStatus, TaskType
@@ -39,6 +42,24 @@ def test_task_context_exposes_read_only_task_view() -> None:
     assert context.status == TaskStatus.PENDING
     assert context.cancelled is False
     context.raise_if_cancelled()
+
+
+def test_register_rejects_non_task_type() -> None:
+    """Handler registration rejects keys that are not TaskType values."""
+    executor = TaskExecutor()
+    task_type: Any = "bash"
+
+    with pytest.raises(TypeError, match="task_type must be a TaskType"):
+        executor.register(task_type, lambda context: "ok")
+
+
+def test_register_rejects_non_callable_handler() -> None:
+    """Handler registration rejects values that cannot be called."""
+    executor = TaskExecutor()
+    handler: Any = "not callable"
+
+    with pytest.raises(TypeError, match="handler must be callable"):
+        executor.register(TaskType.BASH, handler)
 
 
 def test_execute_moves_task_through_running_to_done() -> None:
@@ -200,7 +221,7 @@ def test_bash_nonzero_exit_marks_task_failed() -> None:
     executor = make_default_executor()
     task = Task(title="Failing command", payload="exit 7", type=TaskType.BASH)
 
-    with pytest.raises(RuntimeError, match="exited with code 7"):
+    with pytest.raises(TaskExecutionError, match="exited with code 7"):
         executor.execute(task)
 
     assert task.status == TaskStatus.FAILED
@@ -217,12 +238,32 @@ def test_bash_failure_uses_stderr_as_error() -> None:
         type=TaskType.BASH,
     )
 
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(TaskExecutionError, match="boom"):
         executor.execute(task)
 
     assert task.status == TaskStatus.FAILED
     assert task.error == "boom\n"
     assert not executor.is_running(task.id)
+
+
+def test_failed_subprocess_result_preserves_output_error_and_returncode() -> None:
+    """Failed subprocesses still attach structured process details."""
+    executor = make_default_executor()
+    task = Task(
+        title="Structured failure",
+        payload="echo before; echo boom >&2; exit 7",
+        type=TaskType.BASH,
+    )
+
+    with pytest.raises(TaskExecutionError, match="boom"):
+        executor.execute(task)
+
+    assert task.result is not None
+    assert task.result.status == TaskStatus.FAILED
+    assert task.result.output == "before\n"
+    assert task.result.error == "boom\n"
+    assert task.result.returncode == 7
+    assert isinstance(task.result.raw, subprocess.CompletedProcess)
 
 
 def test_running_process_registry_is_cleaned_after_failure() -> None:
@@ -273,12 +314,33 @@ def test_bash_task_times_out() -> None:
         timeout=0.1,
     )
 
-    with pytest.raises(TimeoutError, match="Task timed out after 0.1 seconds"):
+    with pytest.raises(TaskTimeoutError, match="Task timed out after 0.1 seconds"):
         executor.execute(task)
 
     assert task.status == TaskStatus.FAILED
     assert task.error == "Task timed out after 0.1 seconds"
     assert not executor.is_running(task.id)
+
+
+def test_timed_out_subprocess_result_preserves_partial_output() -> None:
+    """Timeout results retain output captured before termination."""
+    executor = make_default_executor()
+    task = Task(
+        title="Partial timeout",
+        payload="echo before; echo warn >&2; sleep 30",
+        type=TaskType.BASH,
+        timeout=0.1,
+    )
+
+    with pytest.raises(TaskTimeoutError, match="Task timed out after 0.1 seconds"):
+        executor.execute(task)
+
+    assert task.result is not None
+    assert task.result.status == TaskStatus.FAILED
+    assert task.result.output == "before\n"
+    assert task.result.error == "Task timed out after 0.1 seconds"
+    assert isinstance(task.result.raw, subprocess.CompletedProcess)
+    assert task.result.raw.stderr == "warn\n"
 
 
 def test_handler_cancellation_after_return_raises_task_cancelled() -> None:
@@ -414,6 +476,24 @@ def test_terminate_process_escalates_to_sigkill() -> None:
         ((12345, signal.SIGKILL),),
     ]
     assert process.wait.call_count == 2
+
+
+def test_terminate_process_ignores_missing_group_during_sigkill() -> None:
+    """A process group disappearing before SIGKILL is harmless."""
+    process = Mock(spec=subprocess.Popen)
+    process.pid = 12345
+    process.wait.side_effect = subprocess.TimeoutExpired(cmd="cmd", timeout=5)
+
+    with patch(
+        "ttasks.executor.os.killpg",
+        side_effect=[None, ProcessLookupError],
+    ) as killpg:
+        TaskExecutor._terminate_process(process)
+
+    assert killpg.call_args_list == [
+        ((12345, signal.SIGTERM),),
+        ((12345, signal.SIGKILL),),
+    ]
 
 
 def test_prompt_handler_is_not_configured() -> None:

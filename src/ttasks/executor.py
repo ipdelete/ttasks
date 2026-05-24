@@ -19,6 +19,32 @@ class TaskCancelled(RuntimeError):
     """
 
 
+class TaskExecutionError(RuntimeError):
+    """Raised when a subprocess exits unsuccessfully.
+
+    completed preserves stdout, stderr, and returncode so TaskExecutor can
+    attach structured failure details to Task.result instead of keeping only
+    the exception string.
+    """
+
+    def __init__(self, message: str, completed: subprocess.CompletedProcess[str]):
+        """Create an execution error for completed."""
+        super().__init__(message)
+        self.completed = completed
+
+
+class TaskTimeoutError(TimeoutError):
+    """Raised when a subprocess exceeds its timeout.
+
+    completed preserves any output collected after terminating the process.
+    """
+
+    def __init__(self, message: str, completed: subprocess.CompletedProcess[str]):
+        """Create a timeout error for completed."""
+        super().__init__(message)
+        self.completed = completed
+
+
 @dataclass(frozen=True)
 class TaskContext:
     """Read-only execution view passed to task handlers.
@@ -76,6 +102,10 @@ class TaskContext:
             raise TaskCancelled(f"Task {self.id!r} was cancelled")
 
 
+# Handler contract: returning any value means success and the value is
+# normalized into TaskResult. Raising TaskCancelled means cancelled. Raising any
+# other exception means failed. Handlers that run subprocesses should raise
+# TaskExecutionError or TaskTimeoutError to preserve structured process output.
 TaskHandler = Callable[[TaskContext], Any]
 
 
@@ -88,7 +118,11 @@ class TaskExecutor:
         self._running_processes: dict[str, subprocess.Popen[str]] = {}
 
     def register(self, task_type: TaskType, handler: TaskHandler) -> None:
-        """Register handler as the executor for task_type."""
+        """Register callable handler as the executor for task_type."""
+        if not isinstance(task_type, TaskType):
+            raise TypeError("task_type must be a TaskType")
+        if not callable(handler):
+            raise TypeError("handler must be callable")
         self._handlers[task_type] = handler
 
     def is_running(self, task_id: str) -> bool:
@@ -107,11 +141,17 @@ class TaskExecutor:
     def execute(self, task: Task) -> TaskResult:
         """Execute task with its registered handler.
 
-        Execution always moves through RUNNING first. Successful handlers move
-        the task to DONE; failing handlers move it to FAILED unless cancellation
-        happened while the handler was in flight. Handlers should signal
-        cooperative cancellation by raising TaskCancelled rather than mutating
-        task state directly; the executor performs the CANCELLED transition.
+        Execution always moves through RUNNING first. Returning from a handler
+        means success and moves the task to DONE; raising from a handler means
+        failure unless cancellation happened while the handler was in flight.
+        Handlers should signal cooperative cancellation by raising TaskCancelled
+        rather than mutating task state directly; the executor performs the
+        CANCELLED transition.
+
+        A non-zero subprocess return code is not interpreted here for arbitrary
+        custom handlers. Handlers that want subprocess failures represented as
+        structured TaskResult data should raise TaskExecutionError or
+        TaskTimeoutError.
         """
         if not task.can_transition_to(TaskStatus.RUNNING):
             raise ValueError(f"Cannot execute task with status {task.status.value!r}")
@@ -144,9 +184,23 @@ class TaskExecutor:
                 )
                 raise cancelled from e
             task.transition_to(TaskStatus.FAILED, error=str(e))
-            task.result = TaskResult(
-                task_id=task.id, status=TaskStatus.FAILED, error=str(e)
-            )
+            if isinstance(e, TaskExecutionError | TaskTimeoutError):
+                completed = e.completed
+                error = str(e)
+                if isinstance(e, TaskExecutionError):
+                    error = completed.stderr or error
+                task.result = TaskResult(
+                    task_id=task.id,
+                    status=TaskStatus.FAILED,
+                    output=completed.stdout or "",
+                    error=error,
+                    returncode=completed.returncode,
+                    raw=completed,
+                )
+            else:
+                task.result = TaskResult(
+                    task_id=task.id, status=TaskStatus.FAILED, error=str(e)
+                )
             raise
 
     def _run_command(
@@ -160,6 +214,9 @@ class TaskExecutor:
 
         context.timeout=None follows subprocess semantics: wait indefinitely
         unless another caller cancels the task through TaskExecutor.cancel().
+        Non-zero exits raise TaskExecutionError; timeouts raise
+        TaskTimeoutError. Both exceptions carry a CompletedProcess so execute()
+        can attach stdout, stderr, returncode, and raw process details.
         """
         process = subprocess.Popen(
             args,
@@ -177,10 +234,15 @@ class TaskExecutor:
                 stdout, stderr = process.communicate(timeout=context.timeout)
             except subprocess.TimeoutExpired as e:
                 self._terminate_process(process)
-                process.communicate()
-                raise TimeoutError(
-                    f"Task timed out after {context.timeout} seconds"
-                ) from e
+                stdout, stderr = process.communicate()
+                message = f"Task timed out after {context.timeout} seconds"
+                completed = subprocess.CompletedProcess(
+                    args=args,
+                    returncode=process.returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                raise TaskTimeoutError(message, completed) from e
         finally:
             self._running_processes.pop(context.id, None)
 
@@ -193,7 +255,8 @@ class TaskExecutor:
         if result.returncode != 0:
             if context.cancelled:
                 raise TaskCancelled(f"Task {context.id!r} was cancelled")
-            raise RuntimeError(result.stderr or f"exited with code {result.returncode}")
+            message = result.stderr or f"exited with code {result.returncode}"
+            raise TaskExecutionError(message, result)
         return result
 
     @staticmethod
@@ -207,7 +270,10 @@ class TaskExecutor:
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
             process.wait()
 
     def _run_bash(self, context: TaskContext) -> subprocess.CompletedProcess[str]:

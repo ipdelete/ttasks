@@ -8,7 +8,9 @@ remain importable for callers who prefer explicit paths.
 from .executor import (
     TaskCancelled,
     TaskContext,
+    TaskExecutionError,
     TaskExecutor,
+    TaskTimeoutError,
     make_default_executor,
 )
 from .ledger import TaskLedger
@@ -19,10 +21,12 @@ __all__ = [
     "Task",
     "TaskCancelled",
     "TaskContext",
+    "TaskExecutionError",
     "TaskExecutor",
     "TaskGraph",
     "TaskLedger",
     "TaskResult",
+    "TaskTimeoutError",
     "TaskStatus",
     "TaskType",
     "make_default_executor",

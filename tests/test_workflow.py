@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from ttasks.executor import make_default_executor
+from ttasks.executor import TaskExecutor, make_default_executor
 from ttasks.ledger import TaskLedger
 from ttasks.task import Task, TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
@@ -110,6 +110,14 @@ def test_ledger_can_be_pre_populated() -> None:
 # ---- Validation --------------------------------------------------------------
 
 
+def test_run_rejects_non_positive_max_workers() -> None:
+    """max_workers must be positive before run state is reset or scheduled."""
+    graph = TaskGraph()
+
+    with pytest.raises(ValueError, match="max_workers must be greater than 0"):
+        graph.run(make_default_executor(), max_workers=0)
+
+
 def test_run_raises_on_unregistered_dep() -> None:
     """Referencing a Task that was never assigned to the graph is a ValueError."""
     a = _bash("A", "echo a")
@@ -209,6 +217,39 @@ def test_diamond_runs_with_parallelism() -> None:
 
 
 # ---- Failure policy ----------------------------------------------------------
+
+
+def test_graph_records_executor_errors() -> None:
+    """Executor setup errors are exposed even when task state stays pending."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+
+    graph.run(TaskExecutor())
+
+    assert a.id in graph.errors
+    assert isinstance(graph.errors[a.id], ValueError)
+    assert "No handler registered" in str(graph.errors[a.id])
+    assert a.status == TaskStatus.PENDING
+    assert graph.failed == []
+    assert graph.blocked == []
+    assert not graph.ok
+
+
+def test_executor_error_blocks_descendants() -> None:
+    """A task that cannot execute blocks downstream tasks and records its error."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+
+    graph.run(TaskExecutor())
+
+    assert a.id in graph.errors
+    assert graph.blocked == [b]
+    assert b.status == TaskStatus.PENDING
+    assert not graph.ok
 
 
 def test_failure_blocks_descendants() -> None:
@@ -358,6 +399,20 @@ def test_succeeded_only_lists_graph_tasks_not_whole_ledger() -> None:
     g2.run(make_default_executor())
     assert g1.succeeded == [a]
     assert g2.succeeded == [b]
+
+
+def test_cancelled_lists_cancelled_tasks() -> None:
+    """Cancelled graph tasks are available as a status view."""
+    a = _bash("A", "echo a")
+    a.cancel()
+    graph = TaskGraph()
+    graph[a] = []
+
+    graph.run(make_default_executor())
+
+    assert graph.cancelled == [a]
+    assert graph.blocked == [a]
+    assert not graph.ok
 
 
 def test_failed_lists_failed_tasks() -> None:

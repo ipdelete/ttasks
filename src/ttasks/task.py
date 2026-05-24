@@ -66,6 +66,8 @@ class Task:
 
     def __post_init__(self) -> None:
         """Validate task configuration after dataclass initialization."""
+        if not isinstance(self.type, TaskType):
+            raise TypeError("type must be a TaskType")
         if self.timeout is not None and self.timeout <= 0:
             raise ValueError("timeout must be greater than 0")
 
@@ -81,6 +83,8 @@ class Task:
 
     def can_transition_to(self, status: TaskStatus) -> bool:
         """Return whether the task may move from its current state to status."""
+        if not isinstance(status, TaskStatus):
+            raise TypeError("status must be a TaskStatus")
         return status in _ALLOWED_TRANSITIONS[self._status]
 
     def transition_to(self, status: TaskStatus, error: str | None = None) -> None:
@@ -89,6 +93,8 @@ class Task:
         error is stored for failed transitions and cleared by successful ones
         because the default value is None.
         """
+        if not isinstance(status, TaskStatus):
+            raise TypeError("status must be a TaskStatus")
         if not self.can_transition_to(status):
             message = (
                 f"Cannot transition task from {self._status.value!r} "

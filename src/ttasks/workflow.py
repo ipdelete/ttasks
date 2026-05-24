@@ -31,6 +31,9 @@ class TaskGraph:
         # failed/cancelled or because the task itself could not be submitted.
         # Cleared at the start of each run().
         self._blocked: set[str] = set()
+        # Exceptions raised by submitted task futures during the most recent
+        # run, keyed by task id. Cleared at the start of each run().
+        self._errors: dict[str, BaseException] = {}
 
     # ---- mapping protocol ---------------------------------------------------
 
@@ -84,6 +87,11 @@ class TaskGraph:
         return [t for t in self if t.status == TaskStatus.FAILED]
 
     @property
+    def cancelled(self) -> list[Task]:
+        """Tasks in this graph whose status is CANCELLED."""
+        return [t for t in self if t.status == TaskStatus.CANCELLED]
+
+    @property
     def blocked(self) -> list[Task]:
         """Tasks skipped during the most recent run().
 
@@ -95,9 +103,14 @@ class TaskGraph:
         return [self._ledger[tid] for tid in self._blocked]
 
     @property
+    def errors(self) -> dict[str, BaseException]:
+        """Exceptions raised by task futures during the most recent run."""
+        return dict(self._errors)
+
+    @property
     def ok(self) -> bool:
-        """True iff every task in the graph succeeded."""
-        return len(self.succeeded) == len(self)
+        """True iff every task in the graph succeeded without run errors."""
+        return len(self.succeeded) == len(self) and not self._errors
 
     # ---- topology views -----------------------------------------------------
 
@@ -155,9 +168,13 @@ class TaskGraph:
         can be run again or extended after partial completion. Use graph.failed
         and graph.blocked to inspect the outcome.
         """
+        if max_workers <= 0:
+            raise ValueError("max_workers must be greater than 0")
+
         self._validate()
-        # Reset blocked state from any previous run.
+        # Reset run-scoped state from any previous run.
         self._blocked = set()
+        self._errors = {}
 
         # Empty graph: nothing to wait for. Return early to avoid deadlock.
         if not self._deps:
@@ -189,6 +206,7 @@ class TaskGraph:
                 """Return whether any dependency prevents tid from running."""
                 return any(
                     d in blocked
+                    or d in self._errors
                     or self._ledger[d].status == TaskStatus.CANCELLED
                     or (
                         d in futures
@@ -242,9 +260,12 @@ class TaskGraph:
                 if all(finished(tid) for tid in self._deps):
                     done.set()
 
-            def on_finish(_tid: str, _fut: Future) -> None:
+            def on_finish(tid: str, fut: Future) -> None:
                 """Resume scheduling after a submitted task future completes."""
                 with lock:
+                    exception = fut.exception()
+                    if exception is not None:
+                        self._errors[tid] = exception
                     schedule()
 
             # Kick off every task whose dependencies are already satisfied.
