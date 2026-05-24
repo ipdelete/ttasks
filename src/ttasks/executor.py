@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from task import Task, TaskResult, TaskStatus, TaskType
+from .task import Task, TaskResult, TaskStatus, TaskType
 
 
 class TaskCancelled(RuntimeError):

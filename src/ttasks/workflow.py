@@ -10,9 +10,9 @@ from collections.abc import Iterable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Event, RLock
 
-from executor import TaskExecutor
-from ledger import TaskLedger
-from task import Task
+from .executor import TaskExecutor
+from .ledger import TaskLedger
+from .task import Task
 
 
 class TaskGraph:

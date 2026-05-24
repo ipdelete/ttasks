@@ -9,14 +9,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from executor import (
+from ttasks.executor import (
     TaskCancelled,
     TaskContext,
     TaskExecutor,
     TaskResult,
     default_executor,
 )
-from task import Task, TaskStatus, TaskType
+from ttasks.task import Task, TaskStatus, TaskType
 
 
 def test_task_context_exposes_read_only_task_view() -> None:
@@ -346,7 +346,7 @@ def test_run_command_terminates_if_task_cancelled_during_process_start() -> None
         return process
 
     with (
-        patch("executor.subprocess.Popen", side_effect=fake_popen),
+        patch("ttasks.executor.subprocess.Popen", side_effect=fake_popen),
         patch.object(executor, "_terminate_process") as terminate,
         pytest.raises(TaskCancelled, match=f"Task {task.id!r} was cancelled"),
     ):
@@ -374,7 +374,7 @@ def test_terminate_process_ignores_already_exited_process() -> None:
     process = Mock(spec=subprocess.Popen)
     process.pid = 12345
 
-    with patch("executor.os.killpg", side_effect=ProcessLookupError):
+    with patch("ttasks.executor.os.killpg", side_effect=ProcessLookupError):
         TaskExecutor._terminate_process(process)
 
     process.wait.assert_not_called()
@@ -386,7 +386,7 @@ def test_terminate_process_escalates_to_sigkill() -> None:
     process.pid = 12345
     process.wait.side_effect = [subprocess.TimeoutExpired(cmd="cmd", timeout=5), 0]
 
-    with patch("executor.os.killpg") as killpg:
+    with patch("ttasks.executor.os.killpg") as killpg:
         TaskExecutor._terminate_process(process)
 
     assert killpg.call_args_list == [

@@ -112,5 +112,60 @@
 
 <p>Persistence and the external interface can wait behind those, and the answers to those two questions will be easier once 1–3 exist.</p>
 
+<hr>
+
+<h1>User API improvements</h1>
+
+<p>A separate track from the capability gaps above: how the library <em>feels</em> to a consumer once you import it. Ordered roughly by impact-per-line-of-change. Some items have shipped; others are deferred or dropped after deliberate decisions.</p>
+
+<h2>Shipped</h2>
+
+<h3>Results on the Task</h3>
+<p><strong>Status: done</strong> (commit <code>0fe7e3b</code>).</p>
+<p><code>Task</code> now carries <code>task.result: TaskResult | None</code>, populated by <code>TaskExecutor.execute()</code> on every terminal path — success, failure, and cancellation. Previously only the success path produced a <code>TaskResult</code>; failure and cancellation lost <code>stderr</code>/<code>returncode</code> inside the raised exception. That asymmetry is closed.</p>
+<p>Practical payoff: the ledger is the single post-run view. Consumers walk <code>graph.ledger</code> and read <code>task.status</code>, <code>task.result.output</code>, <code>task.result.error</code> without touching <code>Future</code>, <code>.result()</code>, <code>.exception()</code>, or id-keyed dicts. Futures remain available as an escape hatch from <code>graph.run()</code> for power users.</p>
+<p>Structural: <code>TaskResult</code> moved from <code>executor.py</code> into <code>task.py</code> so the domain types live together. <code>task.py</code> uses <code>from __future__ import annotations</code> so the forward reference <code>Task.result -&gt; TaskResult</code> reads without quotes.</p>
+
+<h3>Package layout: <code>ttasks/</code> with re-exports</h3>
+<p><strong>Status: done.</strong></p>
+<p>The repo moved from a flat layout (sibling <code>task.py</code>, <code>executor.py</code>, <code>ledger.py</code>, <code>workflow.py</code> at the root) to a <code>src/ttasks/</code> package with an <code>__init__.py</code> that re-exports the public surface. Consumers now use a single import line:</p>
+<pre><code>from ttasks import Task, TaskType, TaskGraph, default_executor</code></pre>
+<p>Submodule imports (<code>from ttasks.executor import &hellip;</code>) still work for callers who want to be explicit; the existing tests use that form, while consumers and <code>main.py</code> use the flat surface.</p>
+<p>Decisions made along the way:</p>
+<ul>
+  <li><strong>Layout</strong>: <code>src/</code> layout (<code>src/ttasks/&hellip;</code>) rather than flat, to keep the build / install path honest if PyPI ever happens.</li>
+  <li><strong>Build backend</strong>: hatchling, declared in <code>pyproject.toml</code>. <code>uv build</code> now produces a wheel without extra config.</li>
+  <li><strong>TaskGraph location</strong>: stays inside the package as <code>ttasks.workflow</code> rather than being split into a separate distribution. The SDK-vs-consumer distinction is preserved at the submodule level, not the install level. One <code>pip install ttasks</code>, one library.</li>
+  <li><strong>Internal imports</strong>: relative (<code>from .task import &hellip;</code>) inside the package. Idiomatic and survives a future rename of the package.</li>
+  <li><strong>Public surface</strong>: 10 names exported — <code>Task</code>, <code>TaskStatus</code>, <code>TaskType</code>, <code>TaskResult</code>, <code>TaskLedger</code>, <code>TaskExecutor</code>, <code>TaskContext</code>, <code>TaskCancelled</code>, <code>default_executor</code>, <code>TaskGraph</code>. Nothing trimmed; handler authors get <code>TaskContext</code> from the top level without having to know about <code>ttasks.executor</code>.</li>
+  <li><strong>Public-API contract test</strong>: <code>tests/test_public_api.py</code> pins <code>__all__</code> against an expected set, checks every name resolves, and asserts identity against the canonical submodule object. Adding or removing a public name without updating the contract fails immediately.</li>
+  <li><strong>PyPI publication</strong>: not a current goal, but the structure is ready. Future work: package description, classifiers, README polish.</li>
+</ul>
+<p>Coverage moved from four per-module <code>--cov=</code> targets to a single <code>--cov=ttasks</code>; 103 tests, 100% coverage across <code>__init__.py</code>, <code>task.py</code>, <code>executor.py</code>, <code>ledger.py</code>, <code>workflow.py</code>.</p>
+
+<h2>Open</h2>
+
+<h3><code>GraphRun</code> return type from <code>graph.run()</code></h3>
+<p><strong>Status: open. Less urgent after results-on-Task landed.</strong></p>
+<p>Original motivation: <code>graph.run()</code> returns <code>dict[str, Future]</code>, which is too raw for ordinary consumers. A structured <code>GraphRun</code> would expose <code>.succeeded</code>, <code>.failed</code>, <code>.blocked</code> lists and treat the futures dict as an escape hatch.</p>
+<p>Why it's less urgent now: with <code>task.result</code> on every task, walking the ledger already gives you these views:</p>
+<pre><code>succeeded = [t for t in graph.ledger if t.status == TaskStatus.DONE]
+failed    = [t for t in graph.ledger if t.status == TaskStatus.FAILED]
+blocked   = [t for t in graph.ledger if t.result is None and t in graph]</code></pre>
+<p><code>GraphRun</code> would mainly be sugar over these filters. Worth doing eventually as ergonomic polish; not a behavioural gap.</p>
+
+<h3><code>default_executor()</code> naming and role</h3>
+<p><strong>Status: open. Marginal.</strong></p>
+<p>The name reads as &ldquo;the default&rdquo; but it's a factory function returning a fresh executor each call. Minor consequences: no clear convention for whether consumers should cache the returned executor or call the factory per <code>graph.run()</code>; configuring handlers (prompt, agent) has to happen on each returned instance.</p>
+<p>Possible moves: rename to <code>new_executor()</code> / <code>build_executor()</code>; or make it a module-level singleton; or have <code>graph.run()</code> default the executor internally (rejected — hides a dependency). Defer until something else makes the choice necessary.</p>
+
+<h2>Considered and dropped</h2>
+
+<h3><code>Task.bash(...)</code> classmethod constructor</h3>
+<p>Proposed: <code>Task.bash("A", "echo hi")</code> as a shorthand for <code>Task(title="A", type=TaskType.BASH, payload="echo hi")</code>. Dropped by deliberate decision — explicit <code>type=</code> stays.</p>
+
+<h3><code>graph[a] = None</code> shorthand for root tasks</h3>
+<p>Proposed: allow <code>None</code> in place of <code>[]</code> for tasks with no dependencies. Dropped — the empty list is honest about meaning &ldquo;no deps&rdquo; and is consistent with non-root assignments.</p>
+
 </body>
 </html>

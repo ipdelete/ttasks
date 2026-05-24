@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "ttasks"
 version = "0.1.0"
@@ -5,6 +9,9 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ttasks"]
 
 [dependency-groups]
 dev = [
@@ -15,13 +22,10 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = [
-    "--cov=executor",
-    "--cov=ledger",
-    "--cov=task",
-    "--cov=workflow",
+    "--cov=ttasks",
     "--cov-report=term-missing",
 ]
 
