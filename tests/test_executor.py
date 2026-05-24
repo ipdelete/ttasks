@@ -517,6 +517,7 @@ def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
     errors: list[BaseException] = []
 
     def run() -> None:
+        """Execute the task in a background thread for cancellation."""
         try:
             executor.execute(task)
         except BaseException as e:

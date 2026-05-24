@@ -24,10 +24,12 @@ class TaskGraph:
     """
 
     def __init__(self, ledger: TaskLedger | None = None) -> None:
+        """Create a graph backed by ledger, or by a fresh TaskLedger."""
         self._ledger = ledger if ledger is not None else TaskLedger()
         self._deps: dict[str, list[str]] = {}
-        # Tasks that were skipped during the most recent run() because an
-        # upstream task failed. Cleared at the start of each run().
+        # Tasks skipped during the most recent run() because an upstream task
+        # failed/cancelled or because the task itself could not be submitted.
+        # Cleared at the start of each run().
         self._blocked: set[str] = set()
 
     # ---- mapping protocol ---------------------------------------------------
@@ -42,15 +44,19 @@ class TaskGraph:
         return [self._ledger[d] for d in self._deps[task.id]]
 
     def __contains__(self, task: object) -> bool:
+        """Return whether task is a Task registered in this graph."""
         return isinstance(task, Task) and task.id in self._deps
 
     def __iter__(self) -> Iterator[Task]:
+        """Iterate over graph tasks in insertion order."""
         return (self._ledger[tid] for tid in self._deps)
 
     def __len__(self) -> int:
+        """Return the number of tasks registered in this graph."""
         return len(self._deps)
 
     def __repr__(self) -> str:
+        """Return a concise representation including dependency edges."""
         edges = ", ".join(
             f"{self._ledger[d].title}->{self._ledger[t].title}"
             for t, ds in self._deps.items()
@@ -79,10 +85,12 @@ class TaskGraph:
 
     @property
     def blocked(self) -> list[Task]:
-        """Tasks skipped during the most recent run() due to upstream failure.
+        """Tasks skipped during the most recent run().
 
-        Distinct from "PENDING because run() was never called": this list is
-        populated only by run() and reset on each call.
+        A task is blocked when an upstream task failed/cancelled, or when the
+        task itself could not be submitted because its lifecycle state cannot
+        move to RUNNING. Distinct from "PENDING because run() was never called":
+        this list is populated only by run() and reset on each call.
         """
         return [self._ledger[tid] for tid in self._blocked]
 
@@ -141,9 +149,11 @@ class TaskGraph:
     ) -> "TaskGraph":
         """Execute the DAG. Blocks until done. Returns self for chaining.
 
-        Failure policy: if a task fails, every descendant is marked blocked
-        and never submitted; the run terminates instead of hanging. Use
-        graph.failed and graph.blocked to inspect the outcome.
+        Failure policy: if a task fails or is cancelled, every descendant is
+        marked blocked and never submitted; the run terminates instead of
+        hanging. Already-DONE tasks count as satisfied dependencies so a graph
+        can be run again or extended after partial completion. Use graph.failed
+        and graph.blocked to inspect the outcome.
         """
         self._validate()
         # Reset blocked state from any previous run.
@@ -161,6 +171,7 @@ class TaskGraph:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
 
             def succeeded(tid: str) -> bool:
+                """Return whether tid is already done or succeeded in this run."""
                 task = self._ledger[tid]
                 if task.status == TaskStatus.DONE:
                     return True
@@ -171,9 +182,11 @@ class TaskGraph:
                 )
 
             def ready(tid: str) -> bool:
+                """Return whether all upstream dependencies are satisfied."""
                 return all(succeeded(d) for d in self._deps[tid])
 
             def dep_failed_or_blocked(tid: str) -> bool:
+                """Return whether any dependency prevents tid from running."""
                 return any(
                     d in blocked
                     or self._ledger[d].status == TaskStatus.CANCELLED
@@ -186,6 +199,7 @@ class TaskGraph:
                 )
 
             def finished(tid: str) -> bool:
+                """Return whether tid no longer needs scheduler attention."""
                 return (
                     self._ledger[tid].status == TaskStatus.DONE
                     or tid in blocked
@@ -193,11 +207,13 @@ class TaskGraph:
                 )
 
             def submit(tid: str) -> None:
+                """Submit tid to the thread pool and register its callback."""
                 fut = pool.submit(executor.execute, self._ledger[tid])
                 futures[tid] = fut
                 fut.add_done_callback(lambda f, t=tid: on_finish(t, f))
 
             def schedule() -> None:
+                """Advance scheduling until no more tasks can change state."""
                 # Propagate blocking transitively and submit tasks whose deps
                 # are satisfied. Already-DONE tasks are treated as satisfied so
                 # graph reruns and newly-added descendants do not deadlock.
@@ -227,6 +243,7 @@ class TaskGraph:
                     done.set()
 
             def on_finish(_tid: str, _fut: Future) -> None:
+                """Resume scheduling after a submitted task future completes."""
                 with lock:
                     schedule()
 
