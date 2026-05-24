@@ -30,19 +30,26 @@
 
 <p>Looking at it as a task runner (rather than an experiment), here are the capability gaps I'd flag — grouped so you can decide which are in-scope vs deliberately out-of-scope.</p>
 
+<p><em>Reviewed after the user-API improvements track shipped (commits <code>0fe7e3b</code> … <code>8a95b03</code>). Items marked <strong>[done]</strong> are addressed by that work; <strong>[urgent now]</strong> items got pointier; <strong>[position]</strong> items are no longer open questions but stated positions. The short list at the bottom is updated.</em></p>
+
 <h2>Scheduling &amp; concurrency (you said concurrency is intent)</h2>
 <ul>
-  <li><strong>Submit-and-forget</strong>: today <code>execute()</code> is synchronous and blocks the caller; there's no "enqueue this, run it when you can" verb.</li>
-  <li><strong>Concurrency limits</strong>: no notion of "run at most N at once," per-type pools, or fairness between task types.</li>
-  <li><strong>Queueing &amp; prioritization</strong>: no ordering policy — FIFO, priority, due-time, etc.</li>
+  <li><strong>Submit-and-forget</strong> <strong>[urgent now]</strong>: <code>executor.execute(task)</code> already runs a single task synchronously and sets <code>task.result</code> — the capability exists. What's missing is an async form: submit a task, get a Future immediately, collect later. Today the workaround is wrapping a single task in a one-node TaskGraph, which works but is heavy for the trivial case.</li>
+  <li><strong>Concurrency limits</strong>: <code>graph.run(max_workers=4)</code> is the per-graph knob. Still missing: a global cap across all graphs, per-task-type pools, fairness between types.</li>
+  <li><strong>Queueing &amp; prioritization</strong>: no ordering policy — FIFO, priority, due-time, etc. Within a graph only deps determine order.</li>
   <li><strong>Scheduled / delayed / recurring tasks</strong>: no "run at 3am" or "run every 5 minutes."</li>
-  <li><strong>Dependencies between tasks</strong>: no "B runs after A succeeds," no fan-out/fan-in.</li>
+  <li><strong>Dependencies between tasks</strong> <strong>[done]</strong>: addressed by <code>TaskGraph</code>. Fan-out, fan-in, diamonds, halt-on-failure with blocked-descendant propagation. See <code>ttasks.workflow</code>.</li>
   <li><strong>Backpressure</strong>: no signal when the system is saturated.</li>
 </ul>
 
 <h2>Reliability</h2>
 <ul>
-  <li><strong>Automatic retries with backoff</strong> — <code>FAILED → RUNNING</code> is allowed in the state machine but nothing drives it.</li>
+  <li><strong>Automatic retries with backoff</strong> — <code>FAILED → RUNNING</code> is allowed in the state machine but nothing drives it. Split into two design questions now that DAGs exist:
+    <ul>
+      <li><em>Single-task retry</em>: caller catches <code>FAILED</code> and resubmits, or the executor grows a retry policy. Same shape as before.</li>
+      <li><em>Graph-level retry</em>: rerun only the failed subgraph and unblock its descendants. Lives on <code>TaskGraph</code>, not <code>TaskExecutor</code>. Different API, different tests.</li>
+    </ul>
+  </li>
   <li><strong>Crash recovery</strong>: if the process dies mid-task, the task is silently lost (tied to your persistence question).</li>
   <li><strong>At-least-once vs at-most-once semantics</strong>: undefined. Important once you have persistence + retries.</li>
   <li><strong>Heartbeats / stuck-task detection</strong>: nothing notices a handler that hangs without a timeout.</li>
@@ -54,24 +61,24 @@
   <li><strong>Streaming / incremental output</strong>: stdout/stderr are only available after the task ends. For long shell jobs that's painful.</li>
   <li><strong>Logs and history per task</strong> beyond a single <code>error</code> string and final output.</li>
   <li><strong>Progress reporting</strong> from handlers (percent, stage, custom messages).</li>
-  <li><strong>Timing data</strong>: started-at, finished-at, duration. Only <code>created_at</code> exists today.</li>
-  <li><strong>Metrics / counters</strong>: throughput, failure rate, queue depth.</li>
-  <li><strong>Event stream / subscriptions</strong>: ability for an external watcher to be notified of state changes (status changed, task finished). This will matter a lot whichever external interface you pick.</li>
+  <li><strong>Timing data</strong> <strong>[urgent now]</strong>: started-at, finished-at, duration. <code>TaskResult</code> is the natural home; adding three fields is mechanical. The "no place to put it" excuse is gone.</li>
+  <li><strong>Metrics / counters</strong>: throughput, failure rate, queue depth. Per-graph counts now available via <code>graph.succeeded</code>/<code>failed</code>/<code>blocked</code>; system-wide metrics still open.</li>
+  <li><strong>Event stream / subscriptions</strong> <strong>[urgent now]</strong>: ability for an external watcher to be notified of state changes. After the workflow work, <code>graph.run()</code> now does interesting things over time (multiple tasks transitioning, descendants getting blocked, parallel branches finishing at different moments) but the only way to observe any of it is to wait for the blocking call to return. The top bottleneck for any external interface.</li>
 </ul>
 
 <h2>Querying the ledger</h2>
 <ul>
-  <li><strong>Filter / search</strong>: today you can iterate, get-by-id, or check membership. No "list all FAILED," "find by title," "tasks created in the last hour."</li>
-  <li><strong>Pagination / counts by status</strong>.</li>
-  <li><strong>Bulk operations</strong>: cancel-all-pending, retry-all-failed.</li>
+  <li><strong>Filter / search</strong> <strong>[position]</strong>: per-graph filtering exists via <code>graph.succeeded</code> / <code>graph.failed</code> / <code>graph.blocked</code>. Ledger-level filtering across graphs is intentionally left to consumers as a comprehension: <code>[t for t in ledger if t.status == TaskStatus.FAILED]</code>. The asymmetry reflects the layering — graphs report on their slice, the ledger is just storage.</li>
+  <li><strong>Pagination / counts by status</strong>: open at the ledger level; available per-graph.</li>
+  <li><strong>Bulk operations</strong>: cancel-all-pending, retry-all-failed. Still open.</li>
 </ul>
 
 <h2>Inputs &amp; outputs</h2>
 <ul>
   <li><strong>Structured inputs</strong>: payload is a single string. No parameters, env vars, working directory, stdin, secrets, files.</li>
-  <li><strong>Structured outputs / artifacts</strong>: no concept of a result document, file output, or typed return.</li>
+  <li><strong>Structured outputs / artifacts</strong>: no concept of a result document, file output, or typed return. <code>TaskResult.raw</code> is <code>object</code>, which is permissive but not typed.</li>
   <li><strong>Result size limits</strong>: a chatty shell command will pile output into memory unbounded.</li>
-  <li><strong>Passing results between tasks</strong> (needed once dependencies exist).</li>
+  <li><strong>Passing results between tasks</strong> <strong>[urgent now]</strong>: was theoretical before DAGs existed. Now a glaring hole: inside B's handler there's no clean way to read A's output. A handler receives a <code>TaskContext</code> containing only <code>task</code> and a cancellation event — no view of upstream results. We ship a DAG runner without a way to plumb data through it.</li>
 </ul>
 
 <h2>Security &amp; multi-tenancy</h2>
@@ -87,8 +94,8 @@
 <ul>
   <li><strong>Paused / suspended</strong> state — useful for maintenance windows or manual gating.</li>
   <li><strong>Expired / timed-out</strong> as a distinct terminal state vs being folded into FAILED (you may or may not want this — worth a deliberate choice).</li>
-  <li><strong>Retention policy</strong>: when do DONE/CANCELLED tasks leave the ledger? Today: never, unless someone deletes them.</li>
-  <li><strong>Updating a task</strong> after creation (e.g., bumping a timeout, editing payload before run) — currently impossible by design; confirm that's intentional.</li>
+  <li><strong>Retention policy</strong>: when do DONE/CANCELLED tasks leave the ledger? Today: never, unless someone deletes them. With multiple graphs sharing a ledger, eviction needs to know whether any graph still references the task.</li>
+  <li><strong>Updating a task</strong> after creation <strong>[position]</strong>: the runner mutates <code>task.status</code> and <code>task.result</code> during execution; callers do not mutate tasks after construction. "Immutable Task" is the caller-side contract, not a hard invariant. Worth restating in the README so the boundary is explicit.</li>
 </ul>
 
 <h2>Handler ergonomics (relevant once prompt/agent land)</h2>
@@ -102,15 +109,17 @@
 
 <h2>My short list if you want to prioritize</h2>
 
-<p>If this is a task runner and not just a state machine demo, the three I'd pick up first — because everything else assumes them — are:</p>
+<p><em>Updated after the workflow work shipped. Originally the top three were async submission, an event stream, and streaming output + timing. The DAG runner addressed parts of the first and made other items pointier. Current ranking:</em></p>
 
 <ol>
-  <li><strong>Async submission + a worker pool</strong> (turns this from a library into a runner).</li>
-  <li><strong>An event/subscription stream for status changes</strong> (unblocks any external interface — CLI, HTTP, TUI — without committing to one yet).</li>
-  <li><strong>Streaming output + timing metadata on tasks</strong> (cheap, and the lack of it will bite the moment you actually use this).</li>
+  <li><strong>Event stream / subscriptions</strong> for status changes. Promoted to #1 — now the bottleneck for any external interface and any mid-run observability of the new DAG behavior. Unblocks CLI, HTTP, TUI without committing to one.</li>
+  <li><strong>Passing results between tasks</strong>. New entry. Necessary for DAGs to be actually useful, not just topologically correct.</li>
+  <li><strong>Timing metadata on <code>TaskResult</code></strong>: <code>started_at</code>, <code>finished_at</code>, <code>duration</code>. Promoted because the implementation cost is now trivial; cheapest meaningful win on the list.</li>
+  <li><strong>Streaming output</strong>. Still useful but less urgent without an event stream to deliver it through.</li>
+  <li><strong>Submit-and-forget for individual tasks</strong>. Demoted from #1; the dep-graph case is the more interesting concurrency story now. <code>executor.execute(task)</code> already covers the sync single-task case; what's needed is the async form (returns a Future immediately).</li>
 </ol>
 
-<p>Persistence and the external interface can wait behind those, and the answers to those two questions will be easier once 1–3 exist.</p>
+<p>Persistence and the external interface can wait behind these. The answers to the persistence and interface questions will be easier once the event stream exists.</p>
 
 <hr>
 
