@@ -1,5 +1,6 @@
 """Task execution and process-management helpers."""
 
+import asyncio
 import os
 import signal
 import subprocess
@@ -384,9 +385,68 @@ class TaskExecutor:
         return self._run_command(context, ["pwsh", "-Command", context.payload])
 
 
-def _run_prompt(context: TaskContext) -> str:
-    """Placeholder for prompt execution until a prompt backend is registered."""
-    raise NotImplementedError("Prompt handler not configured")
+DEFAULT_COPILOT_PROMPT_MODEL = "gpt-5.4-mini"
+DEFAULT_COPILOT_PROMPT_TIMEOUT = 60.0
+
+
+def make_copilot_prompt_handler(
+    *,
+    model: str = DEFAULT_COPILOT_PROMPT_MODEL,
+    timeout: float = DEFAULT_COPILOT_PROMPT_TIMEOUT,
+) -> TaskHandler:
+    """Return a PROMPT handler backed by the GitHub Copilot SDK.
+
+    The handler sends context.payload as a single-turn text prompt, disables
+    tools with an empty available_tools allowlist, and returns the assistant
+    message content as task output. context.timeout overrides timeout per task.
+    """
+    if not model:
+        raise ValueError("model must not be empty")
+    if timeout <= 0:
+        raise ValueError("timeout must be greater than 0")
+
+    def handler(context: TaskContext) -> str:
+        """Run one synchronous prompt task through the async Copilot SDK."""
+        return asyncio.run(
+            _run_copilot_prompt(context, model=model, default_timeout=timeout)
+        )
+
+    return handler
+
+
+async def _run_copilot_prompt(
+    context: TaskContext,
+    *,
+    model: str,
+    default_timeout: float,
+) -> str:
+    """Send a single-turn prompt to Copilot and return assistant text."""
+    from copilot import CopilotClient
+    from copilot.generated.session_events import AssistantMessageData
+    from copilot.session import PermissionHandler
+
+    context.raise_if_cancelled()
+    effective_timeout = (
+        context.timeout if context.timeout is not None else default_timeout
+    )
+
+    async with CopilotClient() as client:
+        context.raise_if_cancelled()
+        async with await client.create_session(
+            on_permission_request=PermissionHandler.approve_all,
+            model=model,
+            available_tools=[],
+        ) as session:
+            context.raise_if_cancelled()
+            response = await session.send_and_wait(
+                context.payload,
+                timeout=effective_timeout,
+            )
+
+    context.raise_if_cancelled()
+    if response is None or not isinstance(response.data, AssistantMessageData):
+        return ""
+    return response.data.content or ""
 
 
 def _run_agent(context: TaskContext) -> str:
@@ -399,8 +459,9 @@ def make_default_executor() -> TaskExecutor:
 
     Returns a new instance on every call; not a cached singleton. Each
     returned executor has BASH, POWERSHELL, PROMPT, and AGENT handlers
-    pre-registered. The PROMPT and AGENT handlers are stubs that raise
-    NotImplementedError until a real backend is wired in.
+    pre-registered. The PROMPT handler uses the GitHub Copilot SDK for a
+    no-tools single-turn text prompt. The AGENT handler remains a stub that
+    raises NotImplementedError until a real backend is wired in.
 
     To customize, call ``.register()`` on the returned instance — the
     customization is local to that executor, not to the package.
@@ -408,6 +469,6 @@ def make_default_executor() -> TaskExecutor:
     executor = TaskExecutor()
     executor.register(TaskType.BASH, executor._run_bash)
     executor.register(TaskType.POWERSHELL, executor._run_powershell)
-    executor.register(TaskType.PROMPT, _run_prompt)
+    executor.register(TaskType.PROMPT, make_copilot_prompt_handler())
     executor.register(TaskType.AGENT, _run_agent)
     return executor

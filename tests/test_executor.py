@@ -3,9 +3,11 @@
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -19,6 +21,7 @@ from ttasks.executor import (
     TaskExecutor,
     TaskResult,
     TaskTimeoutError,
+    make_copilot_prompt_handler,
     make_default_executor,
 )
 from ttasks.task import Task, TaskStatus, TaskType
@@ -663,16 +666,196 @@ def test_terminate_process_ignores_missing_group_during_sigkill() -> None:
     ]
 
 
-def test_prompt_handler_is_not_configured() -> None:
-    """The default PROMPT handler is an explicit placeholder."""
+def install_fake_copilot(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    content: str | None = "response",
+    data: object | None = None,
+    error: BaseException | None = None,
+) -> dict[str, Any]:
+    """Install fake copilot modules and return call recording state."""
+    recorded: dict[str, Any] = {}
+
+    class AssistantMessageData:
+        """Fake Copilot assistant message data."""
+
+        def __init__(self, content: str | None) -> None:
+            """Store assistant message content."""
+            self.content = content
+
+    class FakeSession:
+        """Fake Copilot session async context manager."""
+
+        async def __aenter__(self) -> "FakeSession":
+            """Enter the fake session context."""
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            """Record fake session context exit."""
+            recorded["session_exited"] = True
+
+        async def send_and_wait(self, prompt: str, *, timeout: float) -> object | None:
+            """Record the prompt call and return configured fake response."""
+            recorded["prompt"] = prompt
+            recorded["timeout"] = timeout
+            if error is not None:
+                raise error
+            if data is not None:
+                return SimpleNamespace(data=data)
+            if content is None:
+                return None
+            return SimpleNamespace(data=AssistantMessageData(content))
+
+    class FakeClient:
+        """Fake Copilot client async context manager."""
+
+        async def __aenter__(self) -> "FakeClient":
+            """Enter the fake client context."""
+            recorded["client_entered"] = True
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            """Record fake client context exit."""
+            recorded["client_exited"] = True
+
+        async def create_session(self, **kwargs: object) -> FakeSession:
+            """Record session options and return a fake session."""
+            recorded["create_session"] = kwargs
+            return FakeSession()
+
+    class FakePermissionHandler:
+        """Fake Copilot permission handler namespace."""
+
+        @staticmethod
+        def approve_all(*args: object) -> object:
+            """Return a placeholder approval result."""
+            return object()
+
+    copilot: Any = ModuleType("copilot")
+    copilot.__path__ = []
+    copilot.CopilotClient = FakeClient
+    generated: Any = ModuleType("copilot.generated")
+    generated.__path__ = []
+    session_events: Any = ModuleType("copilot.generated.session_events")
+    session_events.AssistantMessageData = AssistantMessageData
+    session_module: Any = ModuleType("copilot.session")
+    session_module.PermissionHandler = FakePermissionHandler
+
+    monkeypatch.setitem(sys.modules, "copilot", copilot)
+    monkeypatch.setitem(sys.modules, "copilot.generated", generated)
+    monkeypatch.setitem(sys.modules, "copilot.generated.session_events", session_events)
+    monkeypatch.setitem(sys.modules, "copilot.session", session_module)
+    return recorded
+
+
+def test_make_copilot_prompt_handler_rejects_empty_model() -> None:
+    """Copilot prompt handlers require a non-empty model name."""
+    with pytest.raises(ValueError, match="model must not be empty"):
+        make_copilot_prompt_handler(model="")
+
+
+def test_make_copilot_prompt_handler_rejects_non_positive_timeout() -> None:
+    """Copilot prompt handlers require a positive default timeout."""
+    with pytest.raises(ValueError, match="timeout must be greater than 0"):
+        make_copilot_prompt_handler(timeout=0)
+
+
+def test_default_prompt_handler_uses_copilot_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default PROMPT handler sends one no-tools Copilot prompt."""
+    recorded = install_fake_copilot(monkeypatch, content="hello back")
     executor = make_default_executor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
 
-    with pytest.raises(NotImplementedError, match="Prompt handler not configured"):
+    result = executor.execute(task)
+
+    assert result.output == "hello back"
+    assert task.status == TaskStatus.DONE
+    assert recorded["prompt"] == "hello"
+    assert recorded["timeout"] == 60.0
+    create_session = recorded["create_session"]
+    assert callable(create_session["on_permission_request"])
+    assert create_session["model"] == "gpt-5.4-mini"
+    assert create_session["available_tools"] == []
+    assert recorded["client_entered"] is True
+    assert recorded["client_exited"] is True
+    assert recorded["session_exited"] is True
+
+
+def test_copilot_prompt_handler_uses_task_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task timeout overrides the Copilot prompt handler default timeout."""
+    recorded = install_fake_copilot(monkeypatch, content="done")
+    executor = make_default_executor()
+    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT, timeout=2.5)
+
+    executor.execute(task)
+
+    assert recorded["timeout"] == 2.5
+
+
+def test_copilot_prompt_handler_allows_model_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Callers can register a Copilot prompt handler with a different model."""
+    recorded = install_fake_copilot(monkeypatch, content="done")
+    executor = make_default_executor()
+    executor.register(
+        TaskType.PROMPT,
+        make_copilot_prompt_handler(model="gpt-custom", timeout=12),
+    )
+    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+
+    executor.execute(task)
+
+    assert recorded["timeout"] == 12
+    create_session = recorded["create_session"]
+    assert callable(create_session["on_permission_request"])
+    assert create_session["model"] == "gpt-custom"
+    assert create_session["available_tools"] == []
+
+
+def test_copilot_prompt_handler_none_response_returns_empty_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt with no assistant message normalizes to empty output."""
+    install_fake_copilot(monkeypatch, content=None)
+    executor = make_default_executor()
+    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+
+    result = executor.execute(task)
+
+    assert result.output == ""
+
+
+def test_copilot_prompt_handler_unknown_response_data_returns_empty_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unexpected Copilot response data normalizes to empty output."""
+    install_fake_copilot(monkeypatch, data=object())
+    executor = make_default_executor()
+    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+
+    result = executor.execute(task)
+
+    assert result.output == ""
+
+
+def test_copilot_prompt_handler_sdk_error_marks_task_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Copilot SDK errors follow normal task failure handling."""
+    install_fake_copilot(monkeypatch, error=RuntimeError("sdk boom"))
+    executor = make_default_executor()
+    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+
+    with pytest.raises(RuntimeError, match="sdk boom"):
         executor.execute(task)
 
     assert task.status == TaskStatus.FAILED
-    assert task.error == "Prompt handler not configured"
+    assert task.error == "sdk boom"
 
 
 def test_agent_handler_is_not_configured() -> None:

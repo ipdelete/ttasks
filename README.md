@@ -10,6 +10,7 @@ simple dependency graphs with `TaskGraph`.
 
 - Python 3.12+
 - `uv` for the development workflow used by this repository
+- GitHub Copilot authentication for `TaskType.PROMPT` tasks
 
 ## Quick start
 
@@ -143,11 +144,50 @@ The default executor registers built-in handlers for:
 
 - `TaskType.BASH`
 - `TaskType.POWERSHELL`
-- `TaskType.PROMPT` placeholder
+- `TaskType.PROMPT`
 - `TaskType.AGENT` placeholder
 
-`PROMPT` and `AGENT` currently raise `NotImplementedError` until real backends
-are configured.
+`PROMPT` uses the GitHub Copilot SDK for a no-tools, single-turn text prompt.
+`AGENT` currently raises `NotImplementedError` until a real backend is
+configured.
+
+### Prompt tasks
+
+Prompt tasks send `Task.payload` to Copilot and store the assistant message text
+in `TaskResult.output`:
+
+```python
+from ttasks import Task, TaskType, make_default_executor
+
+executor = make_default_executor()
+task = Task(
+    title="Explain DAGs",
+    payload="Explain a DAG in one concise sentence.",
+    type=TaskType.PROMPT,
+)
+
+result = executor.execute(task)
+print(result.output)
+```
+
+Prompt task behavior:
+
+- default model: `gpt-5.4-mini`
+- no tools are exposed to the Copilot session
+- `Task.timeout` overrides the prompt handler's default wait timeout
+- users must already be authenticated with GitHub Copilot
+
+Register a custom Copilot prompt handler to choose a different model or default
+timeout:
+
+```python
+from ttasks import TaskType, make_copilot_prompt_handler
+
+executor.register(
+    TaskType.PROMPT,
+    make_copilot_prompt_handler(model="gpt-5", timeout=120),
+)
+```
 
 ## Event stream
 

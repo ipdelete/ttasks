@@ -12,6 +12,7 @@ from .executor import (
     TaskExecutionError,
     TaskExecutor,
     TaskTimeoutError,
+    make_copilot_prompt_handler,
     make_default_executor,
 )
 from .ledger import GraphLedger, TaskLedger
@@ -34,5 +35,6 @@ __all__ = [
     "TaskTimeoutError",
     "TaskStatus",
     "TaskType",
+    "make_copilot_prompt_handler",
     "make_default_executor",
 ]

@@ -24,8 +24,13 @@ from ttasks import (
 
 
 def _bash(title: str, payload: str) -> Task:
-    """Shorthand for the demo: every task is a bash one-liner."""
+    """Shorthand for the demo: create a bash one-liner task."""
     return Task(title=title, type=TaskType.BASH, payload=payload)
+
+
+def _prompt(title: str, payload: str) -> Task:
+    """Shorthand for the demo: create a Copilot prompt task."""
+    return Task(title=title, type=TaskType.PROMPT, payload=payload, timeout=30)
 
 
 def _print_graph(graph: TaskGraph) -> None:
@@ -70,14 +75,19 @@ def main() -> None:
     alpha[y] = [x]
     graphs[alpha.id] = alpha
 
-    # Graph beta: P -> {Q, R} (diamond top half, all succeed).
+    # Graph beta: P -> {Q, R, S} (fan-out; S is a no-tools prompt task).
     p = _bash("P", "echo p")
     q = _bash("Q", "echo q")
     r = _bash("R", "echo r")
+    s = _prompt(
+        "S",
+        "Reply with exactly this text and no punctuation: ttasks prompt ok",
+    )
     beta = TaskGraph(ledger=ledger, title="beta")
     beta[p] = []
     beta[q] = [p]
     beta[r] = [p]
+    beta[s] = [p]
     graphs[beta.id] = beta
 
     # Graph gamma: F fails, G is blocked. Demonstrates the blocked view.
