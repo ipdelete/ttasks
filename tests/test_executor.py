@@ -5,6 +5,7 @@ import signal
 import subprocess
 import threading
 import time
+from datetime import datetime
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -20,6 +21,12 @@ from ttasks.executor import (
     make_default_executor,
 )
 from ttasks.task import Task, TaskStatus, TaskType
+
+
+def assert_result_timing(result: TaskResult, before: datetime, after: datetime) -> None:
+    """Assert result timing is populated and bounded by before/after."""
+    assert before <= result.started_at <= result.finished_at <= after
+    assert result.duration >= 0
 
 
 def test_task_context_exposes_read_only_task_view() -> None:
@@ -76,12 +83,12 @@ def test_execute_moves_task_through_running_to_done() -> None:
 
     result = executor.execute(task)
 
-    assert result == TaskResult(
-        task_id=task.id,
-        status=TaskStatus.DONE,
-        output="ok",
-        raw="ok",
-    )
+    assert result.task_id == task.id
+    assert result.status == TaskStatus.DONE
+    assert result.output == "ok"
+    assert result.raw == "ok"
+    assert result.started_at <= result.finished_at
+    assert result.duration >= 0
     assert task.status == TaskStatus.DONE
 
 
@@ -99,7 +106,11 @@ def test_task_result_wraps_non_string_raw_values() -> None:
 
     result = executor.execute(task)
 
-    assert result == TaskResult(task_id=task.id, status=TaskStatus.DONE, raw=raw)
+    assert result.task_id == task.id
+    assert result.status == TaskStatus.DONE
+    assert result.raw == raw
+    assert result.started_at <= result.finished_at
+    assert result.duration >= 0
 
 
 def test_execute_rejects_task_without_registered_handler() -> None:
@@ -181,6 +192,19 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
     assert result.status == TaskStatus.DONE
     assert task.status == TaskStatus.DONE
     assert task.error is None
+
+
+def test_successful_execute_sets_task_result_timing() -> None:
+    """Successful execution records start, finish, and duration timing."""
+    executor = make_default_executor()
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+
+    before = datetime.now()
+    result = executor.execute(task)
+    after = datetime.now()
+
+    assert_result_timing(result, before, after)
+    assert task.result is result
 
 
 def test_default_executor_can_execute_bash() -> None:
@@ -581,12 +605,15 @@ def test_failed_execute_sets_task_result_with_failed_status() -> None:
     task = Task(title="X", payload="exit 1", type=TaskType.BASH)
     executor = make_default_executor()
 
+    before = datetime.now()
     with pytest.raises(RuntimeError):
         executor.execute(task)
+    after = datetime.now()
 
     assert task.result is not None
     assert task.result.status == TaskStatus.FAILED
     assert task.result.error  # exception text captured
+    assert_result_timing(task.result, before, after)
     assert task.status == TaskStatus.FAILED
 
 
@@ -603,6 +630,7 @@ def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
         except BaseException as e:
             errors.append(e)
 
+    before = datetime.now()
     thread = threading.Thread(target=run)
     thread.start()
 
@@ -618,9 +646,12 @@ def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
     thread.join(timeout=2)
 
     assert isinstance(errors[0], TaskCancelled)
+    after = datetime.now()
+
     assert task.status == TaskStatus.CANCELLED
     assert task.result is not None
     assert task.result.status == TaskStatus.CANCELLED
+    assert_result_timing(task.result, before, after)
 
 
 def test_retry_after_failure_replaces_task_result() -> None:

@@ -3,8 +3,10 @@
 import os
 import signal
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from .task import Task, TaskResult, TaskStatus, TaskType
@@ -161,26 +163,52 @@ class TaskExecutor:
             raise ValueError(f"No handler registered for task type {task.type.value!r}")
 
         task.transition_to(TaskStatus.RUNNING)
+        started_at = datetime.now()
+        started_monotonic = time.monotonic()
+
+        def result_timing() -> tuple[datetime, float]:
+            """Return finish time and duration for a terminal TaskResult."""
+            return datetime.now(), time.monotonic() - started_monotonic
+
         context = TaskContext(task)
         try:
             raw_result = handler(context)
             context.raise_if_cancelled()
             task.transition_to(TaskStatus.DONE)
-            result = TaskResult.from_raw(task, raw_result)
+            finished_at, duration = result_timing()
+            result = TaskResult.from_raw(
+                task,
+                raw_result,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration=duration,
+            )
             task.result = result
             return result
         except TaskCancelled as e:
             if task.status != TaskStatus.CANCELLED:
                 task.cancel()
+            finished_at, duration = result_timing()
             task.result = TaskResult(
-                task_id=task.id, status=TaskStatus.CANCELLED, error=str(e)
+                task_id=task.id,
+                status=TaskStatus.CANCELLED,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration=duration,
+                error=str(e),
             )
             raise
         except Exception as e:
             if task.status == TaskStatus.CANCELLED:
                 cancelled = TaskCancelled(f"Task {task.id!r} was cancelled")
+                finished_at, duration = result_timing()
                 task.result = TaskResult(
-                    task_id=task.id, status=TaskStatus.CANCELLED, error=str(e)
+                    task_id=task.id,
+                    status=TaskStatus.CANCELLED,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration=duration,
+                    error=str(e),
                 )
                 raise cancelled from e
             task.transition_to(TaskStatus.FAILED, error=str(e))
@@ -189,17 +217,27 @@ class TaskExecutor:
                 error = str(e)
                 if isinstance(e, TaskExecutionError):
                     error = completed.stderr or error
+                finished_at, duration = result_timing()
                 task.result = TaskResult(
                     task_id=task.id,
                     status=TaskStatus.FAILED,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration=duration,
                     output=completed.stdout or "",
                     error=error,
                     returncode=completed.returncode,
                     raw=completed,
                 )
             else:
+                finished_at, duration = result_timing()
                 task.result = TaskResult(
-                    task_id=task.id, status=TaskStatus.FAILED, error=str(e)
+                    task_id=task.id,
+                    status=TaskStatus.FAILED,
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration=duration,
+                    error=str(e),
                 )
             raise
 

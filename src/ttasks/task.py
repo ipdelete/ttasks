@@ -132,19 +132,33 @@ class TaskResult:
 
     task_id: str
     status: TaskStatus
+    started_at: datetime
+    finished_at: datetime
+    duration: float
     output: str = ""
     error: str | None = None
     returncode: int | None = None
     raw: object | None = None
 
     @classmethod
-    def from_raw(cls, task: Task, raw: object) -> TaskResult:
-        """Normalize a handler return value into a TaskResult."""
+    def from_raw(
+        cls,
+        task: Task,
+        raw: object,
+        *,
+        started_at: datetime,
+        finished_at: datetime,
+        duration: float,
+    ) -> TaskResult:
+        """Normalize a handler return value into a timed TaskResult."""
         if isinstance(raw, subprocess.CompletedProcess):
             completed = cast("subprocess.CompletedProcess[str]", raw)
             return cls(
                 task_id=task.id,
                 status=task.status,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration=duration,
                 output=completed.stdout or "",
                 error=completed.stderr or None,
                 returncode=completed.returncode,
@@ -152,6 +166,21 @@ class TaskResult:
             )
 
         if isinstance(raw, str):
-            return cls(task_id=task.id, status=task.status, output=raw, raw=raw)
+            return cls(
+                task_id=task.id,
+                status=task.status,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration=duration,
+                output=raw,
+                raw=raw,
+            )
 
-        return cls(task_id=task.id, status=task.status, raw=raw)
+        return cls(
+            task_id=task.id,
+            status=task.status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration=duration,
+            raw=raw,
+        )

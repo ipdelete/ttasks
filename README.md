@@ -65,7 +65,13 @@ print(result.status)
 print(result.output)
 print(result.error)
 print(result.returncode)
+print(result.started_at)
+print(result.finished_at)
+print(result.duration)
 ```
+
+`started_at` and `finished_at` are wall-clock `datetime` values. `duration` is
+measured with a monotonic clock and reported in seconds.
 
 For subprocess tasks, `TaskResult.raw` is the underlying
 `subprocess.CompletedProcess`.
