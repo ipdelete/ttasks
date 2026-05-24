@@ -12,6 +12,7 @@ from .executor import (
     TaskExecutionError,
     TaskExecutor,
     TaskTimeoutError,
+    make_copilot_agent_handler,
     make_copilot_prompt_handler,
     make_default_executor,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "TaskTimeoutError",
     "TaskStatus",
     "TaskType",
+    "make_copilot_agent_handler",
     "make_copilot_prompt_handler",
     "make_default_executor",
 ]

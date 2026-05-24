@@ -387,6 +387,7 @@ class TaskExecutor:
 
 DEFAULT_COPILOT_PROMPT_MODEL = "gpt-5.4-mini"
 DEFAULT_COPILOT_PROMPT_TIMEOUT = 60.0
+DEFAULT_COPILOT_AGENT_MODEL = "gpt-5.5"
 
 
 def make_copilot_prompt_handler(
@@ -408,19 +409,53 @@ def make_copilot_prompt_handler(
     def handler(context: TaskContext) -> str:
         """Run one synchronous prompt task through the async Copilot SDK."""
         return asyncio.run(
-            _run_copilot_prompt(context, model=model, default_timeout=timeout)
+            _run_copilot_text(
+                context,
+                model=model,
+                default_timeout=timeout,
+                tools_enabled=False,
+            )
         )
 
     return handler
 
 
-async def _run_copilot_prompt(
+def make_copilot_agent_handler(
+    *,
+    model: str = DEFAULT_COPILOT_AGENT_MODEL,
+) -> TaskHandler:
+    """Return an AGENT handler backed by the GitHub Copilot SDK.
+
+    The handler sends context.payload as a single-turn agent instruction,
+    leaves Copilot's default tools enabled, approves permission requests, and
+    returns the assistant message content as task output. context.timeout is
+    used when provided; otherwise no ttasks timeout is applied.
+    """
+    if not model:
+        raise ValueError("model must not be empty")
+
+    def handler(context: TaskContext) -> str:
+        """Run one synchronous agent task through the async Copilot SDK."""
+        return asyncio.run(
+            _run_copilot_text(
+                context,
+                model=model,
+                default_timeout=None,
+                tools_enabled=True,
+            )
+        )
+
+    return handler
+
+
+async def _run_copilot_text(
     context: TaskContext,
     *,
     model: str,
-    default_timeout: float,
+    default_timeout: float | None,
+    tools_enabled: bool,
 ) -> str:
-    """Send a single-turn prompt to Copilot and return assistant text."""
+    """Send one Copilot turn and return assistant text."""
     from copilot import CopilotClient
     from copilot.generated.session_events import AssistantMessageData
     from copilot.session import PermissionHandler
@@ -432,13 +467,21 @@ async def _run_copilot_prompt(
 
     async with CopilotClient() as client:
         context.raise_if_cancelled()
-        async with await client.create_session(
-            on_permission_request=PermissionHandler.approve_all,
-            model=model,
-            available_tools=[],
-        ) as session:
+        if tools_enabled:
+            session_context = await client.create_session(
+                on_permission_request=PermissionHandler.approve_all,
+                model=model,
+            )
+        else:
+            session_context = await client.create_session(
+                on_permission_request=PermissionHandler.approve_all,
+                model=model,
+                available_tools=[],
+            )
+        async with session_context as session:
             context.raise_if_cancelled()
-            response = await session.send_and_wait(
+            send_and_wait: Any = session.send_and_wait
+            response = await send_and_wait(
                 context.payload,
                 timeout=effective_timeout,
             )
@@ -449,19 +492,14 @@ async def _run_copilot_prompt(
     return response.data.content or ""
 
 
-def _run_agent(context: TaskContext) -> str:
-    """Placeholder for agent execution until an agent backend is registered."""
-    raise NotImplementedError("Agent handler not configured")
-
-
 def make_default_executor() -> TaskExecutor:
     """Build a fresh TaskExecutor with the built-in handlers registered.
 
     Returns a new instance on every call; not a cached singleton. Each
     returned executor has BASH, POWERSHELL, PROMPT, and AGENT handlers
     pre-registered. The PROMPT handler uses the GitHub Copilot SDK for a
-    no-tools single-turn text prompt. The AGENT handler remains a stub that
-    raises NotImplementedError until a real backend is wired in.
+    no-tools single-turn text prompt. The AGENT handler uses the SDK for a
+    tool-capable single-turn instruction with permission requests approved.
 
     To customize, call ``.register()`` on the returned instance — the
     customization is local to that executor, not to the package.
@@ -470,5 +508,5 @@ def make_default_executor() -> TaskExecutor:
     executor.register(TaskType.BASH, executor._run_bash)
     executor.register(TaskType.POWERSHELL, executor._run_powershell)
     executor.register(TaskType.PROMPT, make_copilot_prompt_handler())
-    executor.register(TaskType.AGENT, _run_agent)
+    executor.register(TaskType.AGENT, make_copilot_agent_handler())
     return executor

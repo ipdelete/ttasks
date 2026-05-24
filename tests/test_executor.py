@@ -21,6 +21,7 @@ from ttasks.executor import (
     TaskExecutor,
     TaskResult,
     TaskTimeoutError,
+    make_copilot_agent_handler,
     make_copilot_prompt_handler,
     make_default_executor,
 )
@@ -858,16 +859,74 @@ def test_copilot_prompt_handler_sdk_error_marks_task_failed(
     assert task.error == "sdk boom"
 
 
-def test_agent_handler_is_not_configured() -> None:
-    """The default AGENT handler is an explicit placeholder."""
+def test_make_copilot_agent_handler_rejects_empty_model() -> None:
+    """Copilot agent handlers require a non-empty model name."""
+    with pytest.raises(ValueError, match="model must not be empty"):
+        make_copilot_agent_handler(model="")
+
+
+def test_default_agent_handler_uses_copilot_sdk_with_tools_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default AGENT handler sends one tool-capable Copilot instruction."""
+    recorded = install_fake_copilot(monkeypatch, content="agent done")
+    executor = make_default_executor()
+    task = Task(title="Agent", payload="inspect repo", type=TaskType.AGENT)
+
+    result = executor.execute(task)
+
+    assert result.output == "agent done"
+    assert task.status == TaskStatus.DONE
+    assert recorded["prompt"] == "inspect repo"
+    assert recorded["timeout"] is None
+    create_session = recorded["create_session"]
+    assert callable(create_session["on_permission_request"])
+    assert create_session["model"] == "gpt-5.5"
+    assert "available_tools" not in create_session
+
+
+def test_copilot_agent_handler_uses_task_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task timeout overrides the Copilot agent handler no-timeout default."""
+    recorded = install_fake_copilot(monkeypatch, content="done")
+    executor = make_default_executor()
+    task = Task(title="Agent", payload="hello", type=TaskType.AGENT, timeout=3.5)
+
+    executor.execute(task)
+
+    assert recorded["timeout"] == 3.5
+
+
+def test_copilot_agent_handler_allows_model_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Callers can register a Copilot agent handler with a different model."""
+    recorded = install_fake_copilot(monkeypatch, content="done")
+    executor = make_default_executor()
+    executor.register(TaskType.AGENT, make_copilot_agent_handler(model="agent-custom"))
+    task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
+
+    executor.execute(task)
+
+    create_session = recorded["create_session"]
+    assert create_session["model"] == "agent-custom"
+    assert "available_tools" not in create_session
+
+
+def test_copilot_agent_handler_sdk_error_marks_task_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Copilot agent SDK errors follow normal task failure handling."""
+    install_fake_copilot(monkeypatch, error=RuntimeError("agent boom"))
     executor = make_default_executor()
     task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
 
-    with pytest.raises(NotImplementedError, match="Agent handler not configured"):
+    with pytest.raises(RuntimeError, match="agent boom"):
         executor.execute(task)
 
     assert task.status == TaskStatus.FAILED
-    assert task.error == "Agent handler not configured"
+    assert task.error == "agent boom"
 
 
 def test_cancel_stops_in_flight_bash_task() -> None:

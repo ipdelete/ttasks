@@ -145,11 +145,12 @@ The default executor registers built-in handlers for:
 - `TaskType.BASH`
 - `TaskType.POWERSHELL`
 - `TaskType.PROMPT`
-- `TaskType.AGENT` placeholder
+- `TaskType.AGENT`
 
 `PROMPT` uses the GitHub Copilot SDK for a no-tools, single-turn text prompt.
-`AGENT` currently raises `NotImplementedError` until a real backend is
-configured.
+`AGENT` uses the SDK for a tool-capable, single-turn instruction with permission
+requests approved automatically. Treat `AGENT` payloads as trusted executable
+instructions, similar to `BASH` payloads.
 
 ### Prompt tasks
 
@@ -186,6 +187,44 @@ from ttasks import TaskType, make_copilot_prompt_handler
 executor.register(
     TaskType.PROMPT,
     make_copilot_prompt_handler(model="gpt-5", timeout=120),
+)
+```
+
+### Agent tasks
+
+Agent tasks send `Task.payload` to Copilot with the SDK's default tools enabled
+and permission requests approved automatically:
+
+```python
+from ttasks import Task, TaskType, make_default_executor
+
+executor = make_default_executor()
+task = Task(
+    title="Inspect README",
+    payload="Read README.md and summarize this project in one paragraph.",
+    type=TaskType.AGENT,
+)
+
+result = executor.execute(task)
+print(result.output)
+```
+
+Agent task behavior:
+
+- default model: `gpt-5.5`
+- Copilot SDK default tools are available
+- permission requests are approved automatically
+- no handler-level timeout is applied unless `Task.timeout` is set
+- users must already be authenticated with GitHub Copilot
+
+Register a custom Copilot agent handler to choose a different model:
+
+```python
+from ttasks import TaskType, make_copilot_agent_handler
+
+executor.register(
+    TaskType.AGENT,
+    make_copilot_agent_handler(model="gpt-5"),
 )
 ```
 

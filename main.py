@@ -33,6 +33,11 @@ def _prompt(title: str, payload: str) -> Task:
     return Task(title=title, type=TaskType.PROMPT, payload=payload, timeout=30)
 
 
+def _agent(title: str, payload: str) -> Task:
+    """Shorthand for the demo: create a Copilot agent task."""
+    return Task(title=title, type=TaskType.AGENT, payload=payload, timeout=60)
+
+
 def _print_graph(graph: TaskGraph) -> None:
     """Show topology + outcome for one graph."""
     roots = ", ".join(t.title for t in graph.roots()) or "(none)"
@@ -67,12 +72,18 @@ def main() -> None:
     executor = make_default_executor()
     unsubscribe = executor.events.subscribe(_print_event)
 
-    # Graph alpha: X -> Y (linear, both succeed).
+    # Graph alpha: X -> Y -> Z (linear; Z is a tool-capable agent task).
     x = _bash("X", "echo x")
     y = _bash("Y", "echo y")
+    z = _agent(
+        "Z",
+        "Read README.md in the current directory and summarize the project "
+        "in one concise sentence.",
+    )
     alpha = TaskGraph(ledger=ledger, title="alpha")
     alpha[x] = []
     alpha[y] = [x]
+    alpha[z] = [y]
     graphs[alpha.id] = alpha
 
     # Graph beta: P -> {Q, R, S} (fan-out; S is a no-tools prompt task).
