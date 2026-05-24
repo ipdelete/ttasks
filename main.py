@@ -12,7 +12,7 @@ flat re-export surface, not from submodules.
 
 import time
 
-from ttasks import Task, TaskGraph, TaskLedger, TaskType, default_executor
+from ttasks import Task, TaskGraph, TaskLedger, TaskType, make_default_executor
 
 
 def _bash(title: str, payload: str) -> Task:
@@ -37,7 +37,7 @@ def _print_graph(name: str, graph: TaskGraph) -> None:
 def main() -> None:
     """Build two DAGs against a shared ledger and inspect them via the graph."""
     ledger = TaskLedger()
-    executor = default_executor()
+    executor = make_default_executor()
 
     # Graph alpha: X -> Y (linear, both succeed).
     x = _bash("X", "echo x")

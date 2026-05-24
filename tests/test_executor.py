@@ -14,7 +14,7 @@ from ttasks.executor import (
     TaskContext,
     TaskExecutor,
     TaskResult,
-    default_executor,
+    make_default_executor,
 )
 from ttasks.task import Task, TaskStatus, TaskType
 
@@ -164,7 +164,7 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
 
 def test_default_executor_can_execute_bash() -> None:
     """The default executor includes a working BASH handler."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
 
     result = executor.execute(task)
@@ -181,7 +181,7 @@ def test_default_executor_can_execute_bash() -> None:
 
 def test_bash_task_supports_shell_syntax() -> None:
     """BASH tasks intentionally execute shell syntax such as pipes."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(
         title="Shell syntax",
         payload="printf 'hello\\n' | grep hello",
@@ -197,7 +197,7 @@ def test_bash_task_supports_shell_syntax() -> None:
 
 def test_bash_nonzero_exit_marks_task_failed() -> None:
     """A shell command with a non-zero return code fails the task."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="Failing command", payload="exit 7", type=TaskType.BASH)
 
     with pytest.raises(RuntimeError, match="exited with code 7"):
@@ -210,7 +210,7 @@ def test_bash_nonzero_exit_marks_task_failed() -> None:
 
 def test_bash_failure_uses_stderr_as_error() -> None:
     """Subprocess stderr is preferred over the generic exit-code message."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(
         title="Failing command",
         payload="echo boom >&2; exit 1",
@@ -227,7 +227,7 @@ def test_bash_failure_uses_stderr_as_error() -> None:
 
 def test_running_process_registry_is_cleaned_after_failure() -> None:
     """Failed subprocesses are removed from the running-process registry."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="Fail", payload="exit 1", type=TaskType.BASH)
 
     with pytest.raises(RuntimeError):
@@ -239,7 +239,7 @@ def test_running_process_registry_is_cleaned_after_failure() -> None:
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
 def test_powershell_task_executes() -> None:
     """PowerShell tasks execute when pwsh is available on the host."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="PowerShell", payload="'hello'", type=TaskType.POWERSHELL)
 
     result = executor.execute(task)
@@ -252,7 +252,7 @@ def test_powershell_task_executes() -> None:
 
 def test_bash_task_without_timeout_waits_for_completion() -> None:
     """timeout=None means the subprocess is allowed to run until it exits."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="No timeout", payload="sleep 0.1; echo done", type=TaskType.BASH)
 
     result = executor.execute(task)
@@ -265,7 +265,7 @@ def test_bash_task_without_timeout_waits_for_completion() -> None:
 
 def test_bash_task_times_out() -> None:
     """A subprocess exceeding task.timeout is terminated and marked FAILED."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(
         title="Slow",
         payload="sleep 30",
@@ -398,7 +398,7 @@ def test_terminate_process_escalates_to_sigkill() -> None:
 
 def test_prompt_handler_is_not_configured() -> None:
     """The default PROMPT handler is an explicit placeholder."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
 
     with pytest.raises(NotImplementedError, match="Prompt handler not configured"):
@@ -410,7 +410,7 @@ def test_prompt_handler_is_not_configured() -> None:
 
 def test_agent_handler_is_not_configured() -> None:
     """The default AGENT handler is an explicit placeholder."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
 
     with pytest.raises(NotImplementedError, match="Agent handler not configured"):
@@ -422,7 +422,7 @@ def test_agent_handler_is_not_configured() -> None:
 
 def test_cancel_stops_in_flight_bash_task() -> None:
     """Cancelling a running bash task terminates its subprocess."""
-    executor = default_executor()
+    executor = make_default_executor()
     task = Task(title="Long running", payload="sleep 30", type=TaskType.BASH)
     errors: list[BaseException] = []
 
@@ -467,7 +467,7 @@ def test_task_result_is_none_before_execution() -> None:
 def test_successful_execute_sets_task_result() -> None:
     """A task that completes successfully carries its TaskResult on the task."""
     task = Task(title="X", payload="echo hi", type=TaskType.BASH)
-    executor = default_executor()
+    executor = make_default_executor()
     returned = executor.execute(task)
 
     assert task.result is returned
@@ -479,7 +479,7 @@ def test_successful_execute_sets_task_result() -> None:
 def test_failed_execute_sets_task_result_with_failed_status() -> None:
     """A task that fails still produces a TaskResult attached to the task."""
     task = Task(title="X", payload="exit 1", type=TaskType.BASH)
-    executor = default_executor()
+    executor = make_default_executor()
 
     with pytest.raises(RuntimeError):
         executor.execute(task)
@@ -493,7 +493,7 @@ def test_failed_execute_sets_task_result_with_failed_status() -> None:
 def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
     """A task cancelled mid-run still produces a TaskResult on the task."""
     task = Task(title="X", payload="sleep 5", type=TaskType.BASH)
-    executor = default_executor()
+    executor = make_default_executor()
     errors: list[BaseException] = []
 
     def run() -> None:
@@ -525,7 +525,7 @@ def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
 def test_retry_after_failure_replaces_task_result() -> None:
     """Re-running a failed task overwrites task.result, doesn't keep the old one."""
     task = Task(title="X", payload="exit 1", type=TaskType.BASH)
-    executor = default_executor()
+    executor = make_default_executor()
 
     with pytest.raises(RuntimeError):
         executor.execute(task)

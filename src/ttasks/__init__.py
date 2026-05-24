@@ -9,7 +9,7 @@ from .executor import (
     TaskCancelled,
     TaskContext,
     TaskExecutor,
-    default_executor,
+    make_default_executor,
 )
 from .ledger import TaskLedger
 from .task import Task, TaskResult, TaskStatus, TaskType
@@ -25,5 +25,5 @@ __all__ = [
     "TaskResult",
     "TaskStatus",
     "TaskType",
-    "default_executor",
+    "make_default_executor",
 ]

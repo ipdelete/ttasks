@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ttasks — capability gaps</title>
+<style>
+  html { background: #ffffff; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #111;
+    max-width: 760px;
+    margin: 3rem auto;
+    padding: 0 1.25rem;
+    line-height: 1.6;
+    font-size: 16px;
+  }
+  h1 { font-size: 1.6rem; font-weight: 600; margin-top: 2rem; }
+  h2 { font-size: 1.15rem; font-weight: 600; margin-top: 2.25rem; }
+  h3 { font-size: 1rem; font-weight: 600; margin-top: 1.5rem; }
+  p, ul, ol { margin: 0.75rem 0; }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: 0.25rem 0; }
+  hr { border: 0; border-top: 1px solid #e5e5e5; margin: 2.5rem 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; background: #f4f4f4; padding: 0.05em 0.3em; border-radius: 3px; }
+  a { color: #2a5db0; }
+  strong { font-weight: 600; }
+</style>
+</head>
+<body>
+
+<p>Looking at it as a task runner (rather than an experiment), here are the capability gaps I'd flag — grouped so you can decide which are in-scope vs deliberately out-of-scope.</p>
+
+<h2>Scheduling &amp; concurrency (you said concurrency is intent)</h2>
+<ul>
+  <li><strong>Submit-and-forget</strong>: today <code>execute()</code> is synchronous and blocks the caller; there's no "enqueue this, run it when you can" verb.</li>
+  <li><strong>Concurrency limits</strong>: no notion of "run at most N at once," per-type pools, or fairness between task types.</li>
+  <li><strong>Queueing &amp; prioritization</strong>: no ordering policy — FIFO, priority, due-time, etc.</li>
+  <li><strong>Scheduled / delayed / recurring tasks</strong>: no "run at 3am" or "run every 5 minutes."</li>
+  <li><strong>Dependencies between tasks</strong>: no "B runs after A succeeds," no fan-out/fan-in.</li>
+  <li><strong>Backpressure</strong>: no signal when the system is saturated.</li>
+</ul>
+
+<h2>Reliability</h2>
+<ul>
+  <li><strong>Automatic retries with backoff</strong> — <code>FAILED → RUNNING</code> is allowed in the state machine but nothing drives it.</li>
+  <li><strong>Crash recovery</strong>: if the process dies mid-task, the task is silently lost (tied to your persistence question).</li>
+  <li><strong>At-least-once vs at-most-once semantics</strong>: undefined. Important once you have persistence + retries.</li>
+  <li><strong>Heartbeats / stuck-task detection</strong>: nothing notices a handler that hangs without a timeout.</li>
+  <li><strong>Graceful shutdown / drain</strong>: no way to say "stop accepting new work, let running tasks finish."</li>
+</ul>
+
+<h2>Observability</h2>
+<ul>
+  <li><strong>Streaming / incremental output</strong>: stdout/stderr are only available after the task ends. For long shell jobs that's painful.</li>
+  <li><strong>Logs and history per task</strong> beyond a single <code>error</code> string and final output.</li>
+  <li><strong>Progress reporting</strong> from handlers (percent, stage, custom messages).</li>
+  <li><strong>Timing data</strong>: started-at, finished-at, duration. Only <code>created_at</code> exists today.</li>
+  <li><strong>Metrics / counters</strong>: throughput, failure rate, queue depth.</li>
+  <li><strong>Event stream / subscriptions</strong>: ability for an external watcher to be notified of state changes (status changed, task finished). This will matter a lot whichever external interface you pick.</li>
+</ul>
+
+<h2>Querying the ledger</h2>
+<ul>
+  <li><strong>Filter / search</strong>: today you can iterate, get-by-id, or check membership. No "list all FAILED," "find by title," "tasks created in the last hour."</li>
+  <li><strong>Pagination / counts by status</strong>.</li>
+  <li><strong>Bulk operations</strong>: cancel-all-pending, retry-all-failed.</li>
+</ul>
+
+<h2>Inputs &amp; outputs</h2>
+<ul>
+  <li><strong>Structured inputs</strong>: payload is a single string. No parameters, env vars, working directory, stdin, secrets, files.</li>
+  <li><strong>Structured outputs / artifacts</strong>: no concept of a result document, file output, or typed return.</li>
+  <li><strong>Result size limits</strong>: a chatty shell command will pile output into memory unbounded.</li>
+  <li><strong>Passing results between tasks</strong> (needed once dependencies exist).</li>
+</ul>
+
+<h2>Security &amp; multi-tenancy</h2>
+<ul>
+  <li><strong>Identity / ownership</strong>: who created the task, who may cancel it.</li>
+  <li><strong>Authorization</strong>: today anyone with a reference can cancel/delete anything.</li>
+  <li><strong>Sandboxing / resource limits</strong>: CPU, memory, disk, network for shell tasks.</li>
+  <li><strong>Audit log</strong>: who did what, when.</li>
+  <li><strong>Secret handling</strong>: payloads are plain strings; no redaction in logs/output.</li>
+</ul>
+
+<h2>Lifecycle gaps in the current model</h2>
+<ul>
+  <li><strong>Paused / suspended</strong> state — useful for maintenance windows or manual gating.</li>
+  <li><strong>Expired / timed-out</strong> as a distinct terminal state vs being folded into FAILED (you may or may not want this — worth a deliberate choice).</li>
+  <li><strong>Retention policy</strong>: when do DONE/CANCELLED tasks leave the ledger? Today: never, unless someone deletes them.</li>
+  <li><strong>Updating a task</strong> after creation (e.g., bumping a timeout, editing payload before run) — currently impossible by design; confirm that's intentional.</li>
+</ul>
+
+<h2>Handler ergonomics (relevant once prompt/agent land)</h2>
+<ul>
+  <li><strong>Async handlers</strong>: handler signature is sync; a prompt/LLM handler is naturally async and long-lived.</li>
+  <li><strong>Cancellation cooperation contract</strong>: shell tasks are killed via the OS; in-process handlers (prompt/agent) need a documented "check cancellation here" pattern. The hook exists (<code>raise_if_cancelled</code>) but there's no contract that handlers must poll it.</li>
+  <li><strong>Per-handler configuration</strong>: e.g., prompt backend choice, agent tools — no place to put it.</li>
+</ul>
+
+<hr>
+
+<h2>My short list if you want to prioritize</h2>
+
+<p>If this is a task runner and not just a state machine demo, the three I'd pick up first — because everything else assumes them — are:</p>
+
+<ol>
+  <li><strong>Async submission + a worker pool</strong> (turns this from a library into a runner).</li>
+  <li><strong>An event/subscription stream for status changes</strong> (unblocks any external interface — CLI, HTTP, TUI — without committing to one yet).</li>
+  <li><strong>Streaming output + timing metadata on tasks</strong> (cheap, and the lack of it will bite the moment you actually use this).</li>
+</ol>
+
+<p>Persistence and the external interface can wait behind those, and the answers to those two questions will be easier once 1–3 exist.</p>
+
+<hr>
+
+<h1>User API improvements</h1>
+
+<p>A separate track from the capability gaps above: how the library <em>feels</em> to a consumer once you import it. Ordered roughly by impact-per-line-of-change. Some items have shipped; others are deferred or dropped after deliberate decisions.</p>
+
+<h2>Shipped</h2>
+
+<h3>Results on the Task</h3>
+<p><strong>Status: done</strong> (commit <code>0fe7e3b</code>).</p>
+<p><code>Task</code> now carries <code>task.result: TaskResult | None</code>, populated by <code>TaskExecutor.execute()</code> on every terminal path — success, failure, and cancellation. Previously only the success path produced a <code>TaskResult</code>; failure and cancellation lost <code>stderr</code>/<code>returncode</code> inside the raised exception. That asymmetry is closed.</p>
+<p>Practical payoff: the ledger is the single post-run view. Consumers walk <code>graph.ledger</code> and read <code>task.status</code>, <code>task.result.output</code>, <code>task.result.error</code> without touching <code>Future</code>, <code>.result()</code>, <code>.exception()</code>, or id-keyed dicts. Futures remain available as an escape hatch from <code>graph.run()</code> for power users.</p>
+<p>Structural: <code>TaskResult</code> moved from <code>executor.py</code> into <code>task.py</code> so the domain types live together. <code>task.py</code> uses <code>from __future__ import annotations</code> so the forward reference <code>Task.result -&gt; TaskResult</code> reads without quotes.</p>
+
+<h3>Package layout: <code>ttasks/</code> with re-exports</h3>
+<p><strong>Status: done.</strong></p>
+<p>The repo moved from a flat layout (sibling <code>task.py</code>, <code>executor.py</code>, <code>ledger.py</code>, <code>workflow.py</code> at the root) to a <code>src/ttasks/</code> package with an <code>__init__.py</code> that re-exports the public surface. Consumers now use a single import line:</p>
+<pre><code>from ttasks import Task, TaskType, TaskGraph, make_default_executor</code></pre>
+<p>Submodule imports (<code>from ttasks.executor import &hellip;</code>) still work for callers who want to be explicit; the existing tests use that form, while consumers and <code>main.py</code> use the flat surface.</p>
+<p>Decisions made along the way:</p>
+<ul>
+  <li><strong>Layout</strong>: <code>src/</code> layout (<code>src/ttasks/&hellip;</code>) rather than flat, to keep the build / install path honest if PyPI ever happens.</li>
+  <li><strong>Build backend</strong>: hatchling, declared in <code>pyproject.toml</code>. <code>uv build</code> now produces a wheel without extra config.</li>
+  <li><strong>TaskGraph location</strong>: stays inside the package as <code>ttasks.workflow</code> rather than being split into a separate distribution. The SDK-vs-consumer distinction is preserved at the submodule level, not the install level. One <code>pip install ttasks</code>, one library.</li>
+  <li><strong>Internal imports</strong>: relative (<code>from .task import &hellip;</code>) inside the package. Idiomatic and survives a future rename of the package.</li>
+  <li><strong>Public surface</strong>: 10 names exported — <code>Task</code>, <code>TaskStatus</code>, <code>TaskType</code>, <code>TaskResult</code>, <code>TaskLedger</code>, <code>TaskExecutor</code>, <code>TaskContext</code>, <code>TaskCancelled</code>, <code>make_default_executor</code>, <code>TaskGraph</code>. Nothing trimmed; handler authors get <code>TaskContext</code> from the top level without having to know about <code>ttasks.executor</code>.</li>
+  <li><strong>Public-API contract test</strong>: <code>tests/test_public_api.py</code> pins <code>__all__</code> against an expected set, checks every name resolves, and asserts identity against the canonical submodule object. Adding or removing a public name without updating the contract fails immediately.</li>
+  <li><strong>PyPI publication</strong>: not a current goal, but the structure is ready. Future work: package description, classifiers, README polish.</li>
+</ul>
+<p>Coverage moved from four per-module <code>--cov=</code> targets to a single <code>--cov=ttasks</code>; 103 tests, 100% coverage across <code>__init__.py</code>, <code>task.py</code>, <code>executor.py</code>, <code>ledger.py</code>, <code>workflow.py</code>.</p>
+
+<h3>Graph as its own result type (originally: <code>GraphRun</code> return)</h3>
+<p><strong>Status: done.</strong> Shipped with a different shape than originally proposed.</p>
+<p>Original motivation: <code>graph.run()</code> returned <code>dict[str, Future]</code>, which leaked <code>concurrent.futures</code> mechanics into every consumer. The original proposal was a separate frozen <code>GraphRun</code> dataclass with <code>succeeded</code>, <code>failed</code>, <code>blocked</code> fields and a <code>futures</code> escape hatch.</p>
+<p>What actually shipped, after pushback on duplication:</p>
+<ul>
+  <li><strong><code>run()</code> returns <code>self</code></strong>. The graph itself is the navigable result. No new class. No snapshot lists to keep in sync with the ledger.</li>
+  <li><strong>Status views as properties on <code>TaskGraph</code></strong>: <code>graph.succeeded</code>, <code>graph.failed</code>, <code>graph.blocked</code>, <code>graph.ok</code>. Each is a live filter over the graph's own tasks — not a captured copy. Calling them before <code>run()</code> returns honest empty lists / <code>False</code>.</li>
+  <li><strong>Topology methods on <code>TaskGraph</code></strong>: <code>graph.roots()</code> and <code>graph.leaves()</code>. Tangential to the run-state question, but they complete the introspection story.</li>
+  <li><strong>Explicit <code>_blocked</code> tracking</strong>. The graph remembers which task ids were skipped during the most recent <code>run()</code> in a private set; <code>graph.blocked</code> reads it directly. This makes &ldquo;blocked by upstream failure&rdquo; cleanly distinct from &ldquo;PENDING because nobody called <code>run()</code> yet&rdquo;. The set is cleared at the start of every <code>run()</code>.</li>
+  <li><strong>Futures dict removed entirely</strong>. It was unused in production code (<code>main.py</code> already walked the ledger) and load-bearing only in tests. Six test assertions rewritten onto <code>task.status</code> / <code>graph.failed</code> / <code>graph.blocked</code>; the dict is now purely internal state inside <code>run()</code>.</li>
+</ul>
+<p>Decisions made along the way:</p>
+<ul>
+  <li><strong>Properties for status, methods for topology.</strong> &ldquo;What's the state of this graph?&rdquo; reads as an attribute (no parens); &ldquo;compute X about this graph's shape&rdquo; reads as a query (parens). Both happen to be computed; the distinction is about how callers think about them.</li>
+  <li><strong><code>blocked</code> tracked explicitly</strong> rather than derived from <code>task.result is None</code>. The two states aren't the same: a PENDING task in an unrun graph is different from one actively skipped because its parent failed. The runner already had the blocked set in its closure; we just retained it.</li>
+  <li><strong>No new public exports.</strong> Everything is on <code>TaskGraph</code> directly, so <code>ttasks.__all__</code> stays at 10 names. The public-API contract test required no update.</li>
+  <li><strong>Status views iterate <code>self</code>, not <code>self._ledger</code>.</strong> In a multi-graph setup with a shared ledger, each graph reports on its own slice. A task that lives in another graph sharing the same ledger is correctly excluded.</li>
+  <li><strong><code>ok</code> = &ldquo;every task in the graph succeeded&rdquo;</strong>, not &ldquo;no failures and no blocked&rdquo;. An empty graph is vacuously ok; an unrun graph with PENDING tasks is not ok. Subtle but matches what the word means.</li>
+</ul>
+<p>Tests: 22 new tests covering <code>run()</code> return identity, the four status properties (before run, after clean run, after failure, after blocking), and the two topology methods. Six existing futures-based tests rewritten. <code>main.py</code> rewritten to demo three graphs (linear, diamond, failing) against a shared ledger and show off the new graph-level reporting. 125 tests pass, 100% coverage across the package.</p>
+
+<h3>Executor factory naming: <code>default_executor()</code> → <code>make_default_executor()</code></h3>
+<p><strong>Status: done.</strong></p>
+<p>The original name read as &ldquo;the default&rdquo; — implying a singleton — but the function returned a fresh <code>TaskExecutor</code> on every call. Subtle gotcha: a caller who did <code>e = default_executor(); e.register(MY_TYPE, my_handler)</code> would find that the registration only applied to <code>e</code>, not to any other call site, because each call built a new instance.</p>
+<p>Renamed to <code>make_default_executor()</code>. The <code>make_</code> verb prefix matches the Python convention for &ldquo;build me an X with sensible defaults&rdquo; (cf. <code>dataclasses.make_dataclass</code>) and removes the singleton implication. The <code>default</code> qualifier earns its place by distinguishing &ldquo;the one with the built-in handlers pre-registered&rdquo; from any future bare or alternative constructor.</p>
+<p>The docstring now spells out what was previously implicit:</p>
+<ul>
+  <li>Returns a fresh instance on every call — not a cached singleton.</li>
+  <li>BASH, POWERSHELL, PROMPT, and AGENT handlers are pre-registered.</li>
+  <li>PROMPT and AGENT are currently stubs that raise <code>NotImplementedError</code>.</li>
+  <li>Customization happens by calling <code>.register()</code> on the returned instance and is local to that instance.</li>
+</ul>
+<p>Options considered and rejected:</p>
+<ul>
+  <li><strong>Make <code>TaskExecutor()</code> pre-wired</strong> (and drop the factory): couples the executor class to specific built-in handlers; loses the &ldquo;executor is generic, handlers are pluggable&rdquo; story.</li>
+  <li><strong>Real module-level singleton</strong>: global mutable state, test pollution across handler registrations.</li>
+  <li><strong>Auto-build inside <code>graph.run()</code></strong>: hides where handler configuration happens; makes that config harder to discover.</li>
+  <li><strong>Literal <code>default_executor_factory()</code></strong>: matches the user request more directly but reads as Java-ish in Python; <code>make_</code> carries factory semantics idiomatically.</li>
+</ul>
+<p>No deprecation alias — internal repo, no external consumers. All call sites (main.py, ~3 test files, <code>__init__.py</code> re-export, public-API contract test) updated in one pass. Public surface stays at 10 names; only one was renamed. 125 tests pass, 100% coverage.</p>
+
+<h2>Open</h2>
+
+<p>None on this track. The user-API improvements list is closed.</p>
+
+<h2>Considered and dropped</h2>
+
+<h3><code>Task.bash(...)</code> classmethod constructor</h3>
+<p>Proposed: <code>Task.bash("A", "echo hi")</code> as a shorthand for <code>Task(title="A", type=TaskType.BASH, payload="echo hi")</code>. Dropped by deliberate decision — explicit <code>type=</code> stays.</p>
+
+<h3><code>graph[a] = None</code> shorthand for root tasks</h3>
+<p>Proposed: allow <code>None</code> in place of <code>[]</code> for tasks with no dependencies. Dropped — the empty list is honest about meaning &ldquo;no deps&rdquo; and is consistent with non-root assignments.</p>
+
+</body>
+</html>

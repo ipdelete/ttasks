@@ -23,7 +23,7 @@ EXPECTED_PUBLIC_NAMES = {
     "TaskResult",
     "TaskStatus",
     "TaskType",
-    "default_executor",
+    "make_default_executor",
 }
 
 
@@ -48,5 +48,5 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     assert ttasks.TaskExecutor is executor_mod.TaskExecutor
     assert ttasks.TaskContext is executor_mod.TaskContext
     assert ttasks.TaskCancelled is executor_mod.TaskCancelled
-    assert ttasks.default_executor is executor_mod.default_executor
+    assert ttasks.make_default_executor is executor_mod.make_default_executor
     assert ttasks.TaskGraph is workflow_mod.TaskGraph

@@ -222,8 +222,17 @@ def _run_agent(context: TaskContext) -> str:
     raise NotImplementedError("Agent handler not configured")
 
 
-def default_executor() -> TaskExecutor:
-    """Return a TaskExecutor configured with the built-in task handlers."""
+def make_default_executor() -> TaskExecutor:
+    """Build a fresh TaskExecutor with the built-in handlers registered.
+
+    Returns a new instance on every call; not a cached singleton. Each
+    returned executor has BASH, POWERSHELL, PROMPT, and AGENT handlers
+    pre-registered. The PROMPT and AGENT handlers are stubs that raise
+    NotImplementedError until a real backend is wired in.
+
+    To customize, call ``.register()`` on the returned instance — the
+    customization is local to that executor, not to the package.
+    """
     executor = TaskExecutor()
     executor.register(TaskType.BASH, executor._run_bash)
     executor.register(TaskType.POWERSHELL, executor._run_powershell)
