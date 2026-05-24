@@ -10,6 +10,7 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 
+from .events import EventBus, TaskEvent, TaskEventType
 from .task import Task, TaskResult, TaskStatus, TaskType
 
 
@@ -139,6 +140,7 @@ class TaskExecutor:
         """Create an executor with no handlers and no running subprocesses."""
         self._handlers: dict[TaskType, TaskHandler] = {}
         self._running_processes: dict[str, subprocess.Popen[str]] = {}
+        self.events = EventBus()
 
     def register(self, task_type: TaskType, handler: TaskHandler) -> None:
         """Register callable handler as the executor for task_type."""
@@ -152,6 +154,26 @@ class TaskExecutor:
         """Return whether task_id currently has a live subprocess."""
         process = self._running_processes.get(task_id)
         return process is not None and process.poll() is None
+
+    def _emit(
+        self,
+        task: Task,
+        event_type: TaskEventType,
+        previous_status: TaskStatus | None,
+        error: str | None = None,
+    ) -> None:
+        """Emit a task event for task's current status."""
+        self.events.emit(
+            TaskEvent(
+                type=event_type,
+                task_id=task.id,
+                task=task,
+                timestamp=datetime.now(),
+                previous_status=previous_status,
+                status=task.status,
+                error=error,
+            )
+        )
 
     def cancel(self, task: Task) -> None:
         """Cancel a task and terminate its subprocess if one is active."""
@@ -191,7 +213,9 @@ class TaskExecutor:
         if handler is None:
             raise ValueError(f"No handler registered for task type {task.type.value!r}")
 
+        previous_status = task.status
         task.transition_to(TaskStatus.RUNNING)
+        self._emit(task, TaskEventType.STARTED, previous_status)
         started_at = datetime.now()
         started_monotonic = time.monotonic()
 
@@ -214,6 +238,7 @@ class TaskExecutor:
             )
             task.result = result
             task.transition_to(TaskStatus.DONE)
+            self._emit(task, TaskEventType.SUCCEEDED, TaskStatus.RUNNING)
             return result
         except TaskCancelled as e:
             if task.status != TaskStatus.CANCELLED:
@@ -227,6 +252,7 @@ class TaskExecutor:
                 duration=duration,
                 error=str(e),
             )
+            self._emit(task, TaskEventType.CANCELLED, TaskStatus.RUNNING, str(e))
             raise
         except Exception as e:
             if task.status == TaskStatus.CANCELLED:
@@ -240,6 +266,7 @@ class TaskExecutor:
                     duration=duration,
                     error=str(e),
                 )
+                self._emit(task, TaskEventType.CANCELLED, TaskStatus.RUNNING, str(e))
                 raise cancelled from e
             task.transition_to(TaskStatus.FAILED, error=str(e))
             if isinstance(e, TaskExecutionError | TaskTimeoutError):
@@ -259,6 +286,7 @@ class TaskExecutor:
                     returncode=completed.returncode,
                     raw=completed,
                 )
+                self._emit(task, TaskEventType.FAILED, TaskStatus.RUNNING, str(e))
             else:
                 finished_at, duration = result_timing()
                 task.result = TaskResult(
@@ -269,6 +297,7 @@ class TaskExecutor:
                     duration=duration,
                     error=str(e),
                 )
+                self._emit(task, TaskEventType.FAILED, TaskStatus.RUNNING, str(e))
             raise
 
     def _run_command(

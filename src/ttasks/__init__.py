@@ -5,6 +5,7 @@ The public surface is intentionally flat. Submodules
 remain importable for callers who prefer explicit paths.
 """
 
+from .events import EventBus, TaskEvent, TaskEventType
 from .executor import (
     TaskCancelled,
     TaskContext,
@@ -18,10 +19,13 @@ from .task import Task, TaskResult, TaskStatus, TaskType
 from .workflow import TaskGraph
 
 __all__ = [
+    "EventBus",
     "Task",
     "TaskCancelled",
     "TaskContext",
     "TaskExecutionError",
+    "TaskEvent",
+    "TaskEventType",
     "TaskExecutor",
     "TaskGraph",
     "TaskLedger",

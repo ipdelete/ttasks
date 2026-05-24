@@ -128,6 +128,38 @@ The default executor registers built-in handlers for:
 `PROMPT` and `AGENT` currently raise `NotImplementedError` until real backends
 are configured.
 
+## Event stream
+
+Every executor has an `EventBus` for task lifecycle events:
+
+```python
+from ttasks import TaskEvent, TaskEventType
+
+seen: list[TaskEvent] = []
+unsubscribe = executor.events.subscribe(seen.append)
+
+executor.execute(task)
+unsubscribe()
+
+assert [event.type for event in seen] == [
+    TaskEventType.STARTED,
+    TaskEventType.SUCCEEDED,
+]
+```
+
+Events include:
+
+- `type`: `STARTED`, `SUCCEEDED`, `FAILED`, or `CANCELLED`
+- `task_id`
+- `task`: the live task object
+- `previous_status`
+- `status`: the task status at event time
+- `timestamp`
+- `error`, when relevant
+
+Subscriber exceptions do not fail task execution. They are recorded on
+`executor.events.errors` so observers cannot break the work they observe.
+
 ## Timeout policy
 
 `Task.timeout` defaults to `None` intentionally.

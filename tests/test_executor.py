@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from ttasks.events import TaskEvent, TaskEventType
 from ttasks.executor import (
     TaskCancelled,
     TaskContext,
@@ -80,6 +81,116 @@ def test_register_rejects_non_callable_handler() -> None:
 
     with pytest.raises(TypeError, match="handler must be callable"):
         executor.register(TaskType.BASH, handler)
+
+
+def test_execute_success_emits_started_and_succeeded_events() -> None:
+    """Successful execution emits lifecycle events in order."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+    events: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> str:
+        """Return a successful handler result."""
+        assert context.status == TaskStatus.RUNNING
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    executor.execute(task)
+
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.SUCCEEDED,
+    ]
+    assert [event.previous_status for event in events] == [
+        TaskStatus.PENDING,
+        TaskStatus.RUNNING,
+    ]
+    assert [event.status for event in events] == [TaskStatus.RUNNING, TaskStatus.DONE]
+    assert all(event.task is task for event in events)
+    assert events[1].task.result is task.result
+
+
+def test_execute_failure_emits_started_and_failed_events() -> None:
+    """Failed execution emits lifecycle events with error details."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+    events: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> None:
+        """Raise a representative handler failure."""
+        raise RuntimeError("boom")
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        executor.execute(task)
+
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.FAILED,
+    ]
+    assert events[1].previous_status == TaskStatus.RUNNING
+    assert events[1].status == TaskStatus.FAILED
+    assert events[1].error == "boom"
+    assert events[1].task.result is task.result
+
+
+def test_execute_cancellation_emits_started_and_cancelled_events() -> None:
+    """Cancelled execution emits lifecycle events with cancellation details."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+    events: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> None:
+        """Signal cooperative cancellation."""
+        raise TaskCancelled("stop")
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(TaskCancelled, match="stop"):
+        executor.execute(task)
+
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.CANCELLED,
+    ]
+    assert events[1].previous_status == TaskStatus.RUNNING
+    assert events[1].status == TaskStatus.CANCELLED
+    assert events[1].error == "stop"
+    assert events[1].task.result is task.result
+
+
+def test_retry_after_failure_emits_started_event_from_failed_status() -> None:
+    """Retry events preserve the FAILED -> RUNNING transition."""
+    executor = TaskExecutor()
+    task = Task(title="Example", payload="", type=TaskType.BASH)
+    events: list[TaskEvent] = []
+    attempts = 0
+
+    def handler(context: TaskContext) -> str:
+        """Fail once and then recover."""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("boom")
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        executor.execute(task)
+    executor.execute(task)
+
+    started_events = [event for event in events if event.type == TaskEventType.STARTED]
+    assert [event.previous_status for event in started_events] == [
+        TaskStatus.PENDING,
+        TaskStatus.FAILED,
+    ]
 
 
 def test_execute_passes_upstream_task_refs_to_handler() -> None:

@@ -12,7 +12,14 @@ flat re-export surface, not from submodules.
 
 import time
 
-from ttasks import Task, TaskGraph, TaskLedger, TaskType, make_default_executor
+from ttasks import (
+    Task,
+    TaskEvent,
+    TaskGraph,
+    TaskLedger,
+    TaskType,
+    make_default_executor,
+)
 
 
 def _bash(title: str, payload: str) -> Task:
@@ -34,10 +41,21 @@ def _print_graph(name: str, graph: TaskGraph) -> None:
         print(f"     {task.title}  status={task.status.value:<9} output={output!r}")
 
 
+def _print_event(event: TaskEvent) -> None:
+    """Print one lifecycle event from the executor event stream."""
+    previous = event.previous_status.value if event.previous_status else "none"
+    error = f" error={event.error!r}" if event.error else ""
+    print(
+        f"event: {event.type.value:<9} task={event.task.title:<2} "
+        f"{previous}->{event.status.value}{error}"
+    )
+
+
 def main() -> None:
     """Build two DAGs against a shared ledger and inspect them via the graph."""
     ledger = TaskLedger()
     executor = make_default_executor()
+    unsubscribe = executor.events.subscribe(_print_event)
 
     # Graph alpha: X -> Y (linear, both succeed).
     x = _bash("X", "echo x")
@@ -64,9 +82,12 @@ def main() -> None:
 
     # run() returns the graph itself, so calls are chainable.
     start = time.monotonic()
-    alpha.run(executor)
-    beta.run(executor)
-    gamma.run(executor)
+    try:
+        alpha.run(executor)
+        beta.run(executor)
+        gamma.run(executor)
+    finally:
+        unsubscribe()
     elapsed = time.monotonic() - start
 
     _print_graph("alpha", alpha)
