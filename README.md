@@ -387,6 +387,17 @@ def handler(context):
 Only direct dependencies are included. If a task needs an earlier ancestor, add
 that ancestor as an explicit graph dependency.
 
+## Documentation
+
+API documentation is generated from docstrings with `pdoc` and published to
+GitHub Pages by `.github/workflows/docs.yml`.
+
+Build the docs locally:
+
+```bash
+uv run pdoc ttasks --output-directory site
+```
+
 ## Development
 
 Run the full test suite:

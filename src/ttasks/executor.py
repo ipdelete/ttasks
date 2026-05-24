@@ -60,8 +60,8 @@ class TaskContext:
     current task.
     """
 
-    __task: Task
-    __upstream: Mapping[str, Task]
+    _task: Task
+    _upstream: Mapping[str, Task]
 
     def __init__(
         self,
@@ -69,47 +69,43 @@ class TaskContext:
         upstream: Mapping[str, Task] | None = None,
     ) -> None:
         """Create a context for task with read-only upstream task refs."""
-        object.__setattr__(self, "_TaskContext__task", task)
-        object.__setattr__(
-            self,
-            "_TaskContext__upstream",
-            MappingProxyType(dict(upstream or {})),
-        )
+        object.__setattr__(self, "_task", task)
+        object.__setattr__(self, "_upstream", MappingProxyType(dict(upstream or {})))
 
     @property
     def id(self) -> str:
         """Return the task identity."""
-        return self.__task.id
+        return self._task.id
 
     @property
     def title(self) -> str:
         """Return the task title."""
-        return self.__task.title
+        return self._task.title
 
     @property
     def description(self) -> str:
         """Return the task description."""
-        return self.__task.description
+        return self._task.description
 
     @property
     def payload(self) -> str:
         """Return the task payload."""
-        return self.__task.payload
+        return self._task.payload
 
     @property
     def type(self) -> TaskType:
         """Return the task type."""
-        return self.__task.type
+        return self._task.type
 
     @property
     def timeout(self) -> float | None:
         """Return the task timeout."""
-        return self.__task.timeout
+        return self._task.timeout
 
     @property
     def status(self) -> TaskStatus:
         """Return the task's current live status."""
-        return self.__task.status
+        return self._task.status
 
     @property
     def cancelled(self) -> bool:
@@ -119,7 +115,7 @@ class TaskContext:
     @property
     def upstream(self) -> Mapping[str, Task]:
         """Return direct upstream task refs keyed by task ID."""
-        return self.__upstream
+        return self._upstream
 
     def raise_if_cancelled(self) -> None:
         """Raise TaskCancelled if cancellation has been requested."""

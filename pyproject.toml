@@ -18,6 +18,7 @@ packages = ["src/ttasks"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pdoc>=15.0.0",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.14",
     "ty>=0.0.39",
