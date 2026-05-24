@@ -1,16 +1,16 @@
-"""Tests for TaskLedger ID consistency."""
+"""Tests for InMemoryTaskLedger ID consistency."""
 
 from typing import Any
 
 import pytest
 
-from ttasks.ledger import TaskLedger
+from ttasks.ledger import InMemoryTaskLedger
 from ttasks.task import Task, TaskType
 
 
 def test_ledger_rejects_non_task_values() -> None:
     """Only Task instances can be stored in the ledger."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     not_a_task: Any = "not a task"
 
     with pytest.raises(TypeError, match="Expected Task, got str"):
@@ -21,7 +21,7 @@ def test_ledger_rejects_non_task_values() -> None:
 
 def test_ledger_rejects_task_id_mismatch() -> None:
     """A task cannot be stored under an ID that differs from task.id."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
 
     with pytest.raises(ValueError, match="task_id must match task.id"):
@@ -33,7 +33,7 @@ def test_ledger_rejects_task_id_mismatch() -> None:
 
 def test_iterates_over_tasks_in_insertion_order() -> None:
     """Iterating a ledger yields the stored task objects in insertion order."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     first = Task(title="First", payload="echo 1", type=TaskType.BASH)
     second = Task(title="Second", payload="echo 2", type=TaskType.BASH)
 
@@ -45,14 +45,14 @@ def test_iterates_over_tasks_in_insertion_order() -> None:
 
 def test_repr_includes_task_count() -> None:
     """The ledger repr summarizes the current number of stored tasks."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
 
-    assert repr(ledger) == "TaskLedger(0 tasks)"
+    assert repr(ledger) == "InMemoryTaskLedger(0 tasks)"
 
 
 def test_get_missing_task_raises_key_error() -> None:
     """Reading a missing task preserves normal dictionary KeyError behavior."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
 
     with pytest.raises(KeyError):
         ledger["missing"]
@@ -60,7 +60,7 @@ def test_get_missing_task_raises_key_error() -> None:
 
 def test_task_id_cannot_change_after_storing_in_ledger() -> None:
     """Read-only task IDs prevent ledger/task identity drift after insertion."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
     task_id = task.id
     ledger[task.id] = task
@@ -75,7 +75,7 @@ def test_task_id_cannot_change_after_storing_in_ledger() -> None:
 
 def test_ledger_accepts_task_under_its_own_id() -> None:
     """A task stored under task.id is retrievable by that same ID."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
 
     ledger[task.id] = task

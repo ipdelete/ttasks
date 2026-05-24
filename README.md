@@ -3,7 +3,7 @@
 A small Python task ledger, executor, and DAG workflow library.
 
 `ttasks` models work as `Task` objects, stores them in an in-memory
-`TaskLedger`, executes them through a configurable `TaskExecutor`, and can run
+`InMemoryTaskLedger`, executes them through a configurable `TaskExecutor`, and can run
 simple dependency graphs with `TaskGraph`.
 
 ## Requirements
@@ -79,14 +79,14 @@ measured with a monotonic clock and reported in seconds.
 For subprocess tasks, `TaskResult.raw` is the underlying
 `subprocess.CompletedProcess`.
 
-### TaskLedger
+### InMemoryTaskLedger
 
-`TaskLedger` is a small dictionary-like in-memory registry keyed by task ID.
+`InMemoryTaskLedger` is a small dictionary-like in-memory registry keyed by task ID.
 
 ```python
-from ttasks import TaskLedger
+from ttasks import InMemoryTaskLedger
 
-ledger = TaskLedger()
+ledger = InMemoryTaskLedger()
 ledger[task.id] = task
 
 assert ledger[task.id] is task
@@ -94,15 +94,15 @@ assert ledger[task.id] is task
 
 The ledger enforces that tasks are stored under their own immutable IDs.
 
-### GraphLedger
+### InMemoryGraphLedger
 
-`GraphLedger` is the graph-level companion to `TaskLedger`. It stores
+`InMemoryGraphLedger` is the graph-level companion to `InMemoryTaskLedger`. It stores
 `TaskGraph` objects under their own immutable graph IDs.
 
 ```python
-from ttasks import GraphLedger, TaskGraph
+from ttasks import InMemoryGraphLedger, TaskGraph
 
-graphs = GraphLedger()
+graphs = InMemoryGraphLedger()
 graph = TaskGraph(title="build")
 graphs[graph.id] = graph
 
@@ -338,13 +338,13 @@ the transition to `CANCELLED` and records the terminal `TaskResult`.
 registered in the graph before `run()`.
 
 ```python
-from ttasks import GraphLedger, TaskGraph, Task, TaskType, make_default_executor
+from ttasks import InMemoryGraphLedger, TaskGraph, Task, TaskType, make_default_executor
 
 build = Task(title="Build", payload="echo build", type=TaskType.BASH)
 test = Task(title="Test", payload="echo test", type=TaskType.BASH)
 package = Task(title="Package", payload="echo package", type=TaskType.BASH)
 
-graphs = GraphLedger()
+graphs = InMemoryGraphLedger()
 graph = TaskGraph(title="build pipeline")
 graph[build] = []
 graph[test] = [build]

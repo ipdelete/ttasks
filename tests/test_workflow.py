@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from ttasks.executor import TaskExecutor, make_default_executor
-from ttasks.ledger import TaskLedger
+from ttasks.ledger import InMemoryTaskLedger
 from ttasks.task import Task, TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
 
@@ -126,20 +126,20 @@ def test_repr_includes_edges() -> None:
 def test_default_constructor_creates_own_ledger() -> None:
     """A graph constructed without a ledger gets a fresh empty one."""
     graph = TaskGraph()
-    assert isinstance(graph.ledger, TaskLedger)
+    assert isinstance(graph.ledger, InMemoryTaskLedger)
     assert len(graph.ledger) == 0
 
 
 def test_constructor_uses_provided_ledger() -> None:
     """A ledger passed in is held by identity, not copied."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     graph = TaskGraph(ledger=ledger)
     assert graph.ledger is ledger
 
 
 def test_constructor_accepts_positional_ledger() -> None:
     """The existing positional ledger constructor form still works."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     graph = TaskGraph(ledger)
 
     assert graph.ledger is ledger
@@ -147,7 +147,7 @@ def test_constructor_accepts_positional_ledger() -> None:
 
 def test_ledger_can_be_pre_populated() -> None:
     """Tasks already in the ledger are not in the graph until assigned."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     a = _bash("A", "echo a")
     ledger[a.id] = a
     graph = TaskGraph(ledger=ledger)
@@ -588,7 +588,7 @@ def test_succeeded_empty_before_run() -> None:
 
 def test_succeeded_only_lists_graph_tasks_not_whole_ledger() -> None:
     """A task in the shared ledger but not in this graph is not in succeeded."""
-    ledger = TaskLedger()
+    ledger = InMemoryTaskLedger()
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
     g1 = TaskGraph(ledger=ledger)

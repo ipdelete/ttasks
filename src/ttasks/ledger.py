@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from .workflow import TaskGraph
 
 
-class TaskLedger:
+class InMemoryTaskLedger:
     """Dictionary-like registry for tasks keyed by their own task IDs."""
 
     def __init__(self):
@@ -56,10 +56,10 @@ class TaskLedger:
 
     def __repr__(self) -> str:
         """Return a concise representation with the number of stored tasks."""
-        return f"TaskLedger({len(self._tasks)} tasks)"
+        return f"InMemoryTaskLedger({len(self._tasks)} tasks)"
 
 
-class GraphLedger:
+class InMemoryGraphLedger:
     """Dictionary-like registry for graphs keyed by their own graph IDs."""
 
     def __init__(self):
@@ -102,4 +102,4 @@ class GraphLedger:
 
     def __repr__(self) -> str:
         """Return a concise representation with the number of stored graphs."""
-        return f"GraphLedger({len(self._graphs)} graphs)"
+        return f"InMemoryGraphLedger({len(self._graphs)} graphs)"

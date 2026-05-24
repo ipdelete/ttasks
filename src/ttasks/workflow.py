@@ -1,9 +1,9 @@
-"""TaskGraph: a DAG runner that composes TaskLedger + TaskExecutor.
+"""TaskGraph: a DAG runner that composes a task ledger + TaskExecutor.
 
 This module is a *consumer* of the SDK, not part of it. The DAG lives in
-TaskGraph; the tasks themselves live in a TaskLedger; execution goes
+TaskGraph; the tasks themselves live in a task ledger; execution goes
 through a TaskExecutor on a ThreadPoolExecutor. Nothing about Task,
-TaskLedger, or TaskExecutor needs to change to support DAGs.
+InMemoryTaskLedger, or TaskExecutor needs to change to support DAGs.
 """
 
 import uuid
@@ -13,31 +13,31 @@ from datetime import datetime
 from threading import Event, RLock
 
 from .executor import TaskExecutor
-from .ledger import TaskLedger
+from .ledger import InMemoryTaskLedger
 from .task import Task, TaskStatus
 
 
 class TaskGraph:
     """A directed acyclic graph of Tasks.
 
-    Tasks are stored in an associated TaskLedger; the edges (dependencies)
-    are stored on the graph. The two are kept in sync: assigning a task to
-    the graph registers it in the ledger.
+    Tasks are stored in an associated in-memory task ledger; the edges
+    (dependencies) are stored on the graph. The two are kept in sync:
+    assigning a task to the graph registers it in the ledger.
     """
 
     def __init__(
         self,
-        ledger: TaskLedger | None = None,
+        ledger: InMemoryTaskLedger | None = None,
         *,
         title: str = "",
     ) -> None:
-        """Create a graph backed by ledger, or by a fresh TaskLedger."""
+        """Create a graph backed by ledger, or by a fresh InMemoryTaskLedger."""
         if not isinstance(title, str):
             raise TypeError("title must be a str")
         self._id = str(uuid.uuid4())
         self.title = title
         self.created_at = datetime.now()
-        self._ledger = ledger if ledger is not None else TaskLedger()
+        self._ledger = ledger if ledger is not None else InMemoryTaskLedger()
         self._deps: dict[str, list[str]] = {}
         # Tasks skipped during the most recent run() because an upstream task
         # failed/cancelled or because the task itself could not be submitted.
@@ -118,8 +118,8 @@ class TaskGraph:
         return self._id
 
     @property
-    def ledger(self) -> TaskLedger:
-        """The TaskLedger backing this graph."""
+    def ledger(self) -> InMemoryTaskLedger:
+        """The InMemoryTaskLedger backing this graph."""
         return self._ledger
 
     # ---- status views (post-run) --------------------------------------------

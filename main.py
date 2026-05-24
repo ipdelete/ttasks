@@ -13,11 +13,11 @@ flat re-export surface, not from submodules.
 import time
 
 from ttasks import (
-    GraphLedger,
+    InMemoryGraphLedger,
     Task,
     TaskEvent,
     TaskGraph,
-    TaskLedger,
+    InMemoryTaskLedger,
     TaskType,
     make_default_executor,
 )
@@ -67,8 +67,8 @@ def _print_event(event: TaskEvent) -> None:
 
 def main() -> None:
     """Build two DAGs against a shared ledger and inspect them via the graph."""
-    ledger = TaskLedger()
-    graphs = GraphLedger()
+    ledger = InMemoryTaskLedger()
+    graphs = InMemoryGraphLedger()
     executor = make_default_executor()
     unsubscribe = executor.events.subscribe(_print_event)
 

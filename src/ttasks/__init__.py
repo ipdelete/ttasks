@@ -16,13 +16,13 @@ from .executor import (
     make_copilot_prompt_handler,
     make_default_executor,
 )
-from .ledger import GraphLedger, TaskLedger
+from .ledger import InMemoryGraphLedger, InMemoryTaskLedger
 from .task import Task, TaskResult, TaskStatus, TaskType
 from .workflow import TaskGraph
 
 __all__ = [
     "EventBus",
-    "GraphLedger",
+    "InMemoryGraphLedger",
     "Task",
     "TaskCancelled",
     "TaskContext",
@@ -31,7 +31,7 @@ __all__ = [
     "TaskEventType",
     "TaskExecutor",
     "TaskGraph",
-    "TaskLedger",
+    "InMemoryTaskLedger",
     "TaskResult",
     "TaskTimeoutError",
     "TaskStatus",
