@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from ttasks.events import EventBus, TaskEvent, TaskEventType
-from ttasks.task import Task, TaskStatus, TaskType
+from ttasks.task import Task, TaskStatus
 
 
 def _event(task: Task, event_type: TaskEventType) -> TaskEvent:
@@ -24,7 +24,7 @@ def _event(task: Task, event_type: TaskEventType) -> TaskEvent:
 def test_event_bus_subscribe_receives_emitted_event() -> None:
     """Subscribers are called with emitted events."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     event = _event(task, TaskEventType.STARTED)
     seen: list[TaskEvent] = []
 
@@ -37,7 +37,7 @@ def test_event_bus_subscribe_receives_emitted_event() -> None:
 def test_event_bus_unsubscribe_stops_future_events() -> None:
     """The unsubscribe callback removes the subscriber."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     event = _event(task, TaskEventType.STARTED)
     seen: list[TaskEvent] = []
 
@@ -60,7 +60,7 @@ def test_event_bus_rejects_non_callable_subscribers() -> None:
 def test_event_bus_records_subscriber_errors_without_stopping_emit() -> None:
     """Subscriber failures are recorded and later subscribers still run."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     event = _event(task, TaskEventType.STARTED)
     seen: list[TaskEvent] = []
 
@@ -83,7 +83,7 @@ def test_event_bus_records_subscriber_errors_without_stopping_emit() -> None:
 def test_subscribed_context_manager_delivers_events_inside_block() -> None:
     """Events emitted inside `with bus.subscribed(cb):` reach the callback."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     event = _event(task, TaskEventType.STARTED)
     seen: list[TaskEvent] = []
 
@@ -96,7 +96,7 @@ def test_subscribed_context_manager_delivers_events_inside_block() -> None:
 def test_subscribed_context_manager_unsubscribes_on_exit() -> None:
     """After the with block exits, further emits do not reach the callback."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     seen: list[TaskEvent] = []
 
     with bus.subscribed(seen.append):
@@ -110,7 +110,7 @@ def test_subscribed_context_manager_unsubscribes_on_exit() -> None:
 def test_subscribed_context_manager_unsubscribes_on_exception() -> None:
     """Exceptions raised inside the with block still unsubscribe the callback."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     seen: list[TaskEvent] = []
 
     with pytest.raises(RuntimeError, match="boom"), bus.subscribed(seen.append):
@@ -124,7 +124,7 @@ def test_subscribed_context_manager_unsubscribes_on_exception() -> None:
 def test_subscribed_context_manager_supports_nested_callbacks() -> None:
     """Nested with-blocks both receive events and both unsubscribe on exit."""
     bus = EventBus()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     outer: list[TaskEvent] = []
     inner: list[TaskEvent] = []
 

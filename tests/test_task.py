@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from ttasks.task import Task, TaskResult, TaskStatus, TaskType
+from ttasks.task import Task, TaskResult, TaskStatus
 
 
 def test_type_must_be_task_type() -> None:
@@ -19,15 +19,15 @@ def test_type_must_be_task_type() -> None:
 def test_timeout_must_be_positive() -> None:
     """Tasks reject zero and negative timeout values at construction time."""
     with pytest.raises(ValueError, match="timeout must be greater than 0"):
-        Task(title="Example", payload="echo hi", type=TaskType.BASH, timeout=0)
+        Task.bash("echo hi", title="Example", timeout=0)
 
     with pytest.raises(ValueError, match="timeout must be greater than 0"):
-        Task(title="Example", payload="echo hi", type=TaskType.BASH, timeout=-1)
+        Task.bash("echo hi", title="Example", timeout=-1)
 
 
 def test_repr_includes_identity_title_and_status() -> None:
     """The task repr includes the useful debugging fields."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     assert repr(task) == (
         f"Task(id={task.id!r}, title='Example', status={TaskStatus.PENDING.value})"
@@ -36,26 +36,21 @@ def test_repr_includes_identity_title_and_status() -> None:
 
 def test_timeout_defaults_to_no_automatic_timeout() -> None:
     """Omitting timeout intentionally means no automatic timeout is applied."""
-    task = Task(title="No timeout", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="No timeout")
 
     assert task.timeout is None
 
 
 def test_timeout_accepts_positive_values() -> None:
     """Tasks accept positive timeout values for bounded execution."""
-    task = Task(
-        title="Timeout",
-        payload="echo hi",
-        type=TaskType.BASH,
-        timeout=1.5,
-    )
+    task = Task.bash("echo hi", title="Timeout", timeout=1.5)
 
     assert task.timeout == 1.5
 
 
 def test_id_is_read_only() -> None:
     """External callers cannot mutate task identity after construction."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     original_id = task.id
 
     # Use dynamic setattr so the type checker accepts this runtime guard test.
@@ -68,7 +63,7 @@ def test_id_is_read_only() -> None:
 
 def test_status_is_read_only() -> None:
     """External callers cannot bypass the state machine via status assignment."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     # Use dynamic setattr so the type checker accepts this runtime guard test.
     attr = "status"
@@ -80,7 +75,7 @@ def test_status_is_read_only() -> None:
 
 def test_can_transition_to_rejects_non_task_status() -> None:
     """can_transition_to reports a clean TypeError for invalid status values."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     status: Any = "done"
 
     with pytest.raises(TypeError, match="status must be a TaskStatus"):
@@ -89,7 +84,7 @@ def test_can_transition_to_rejects_non_task_status() -> None:
 
 def test_transition_to_rejects_non_task_status() -> None:
     """transition_to reports a clean TypeError for invalid status values."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     status: Any = "done"
 
     with pytest.raises(TypeError, match="status must be a TaskStatus"):
@@ -100,7 +95,7 @@ def test_transition_to_rejects_non_task_status() -> None:
 
 def test_status_changes_through_transition_to() -> None:
     """Valid status transitions are applied through transition_to()."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     task.transition_to(TaskStatus.RUNNING)
     task.transition_to(TaskStatus.DONE)
@@ -111,7 +106,7 @@ def test_status_changes_through_transition_to() -> None:
 
 def test_cancel_changes_status_through_state_machine() -> None:
     """cancel() is a domain helper around the CANCELLED transition."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     task.cancel()
 
@@ -120,7 +115,7 @@ def test_cancel_changes_status_through_state_machine() -> None:
 
 def test_cancel_is_idempotent() -> None:
     """Calling cancel repeatedly leaves the task cancelled without error."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     task.cancel()
     task.cancel()
@@ -130,7 +125,7 @@ def test_cancel_is_idempotent() -> None:
 
 def test_cancel_preserves_previous_error() -> None:
     """Cancelling a failed task keeps the failure reason for inspection."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     task.transition_to(TaskStatus.RUNNING)
     task.transition_to(TaskStatus.FAILED, error="boom")
 
@@ -163,7 +158,7 @@ def test_cancel_preserves_previous_error() -> None:
 )
 def test_done_tasks_reject_public_field_mutation(field: str, value: object) -> None:
     """DONE tasks are immutable to normal public attribute assignment."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     task.transition_to(TaskStatus.RUNNING)
     task.transition_to(TaskStatus.DONE)
 
@@ -173,7 +168,7 @@ def test_done_tasks_reject_public_field_mutation(field: str, value: object) -> N
 
 def test_invalid_transition_preserves_error() -> None:
     """A rejected transition does not mutate status or error."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
     task.transition_to(TaskStatus.RUNNING)
     task.transition_to(TaskStatus.FAILED, error="boom")
 
@@ -186,7 +181,7 @@ def test_invalid_transition_preserves_error() -> None:
 
 def test_failed_tasks_remain_mutable_for_retry() -> None:
     """FAILED tasks remain editable so callers can repair and retry them."""
-    task = Task(title="Example", payload="exit 1", type=TaskType.BASH)
+    task = Task.bash("exit 1", title="Example")
     task.transition_to(TaskStatus.RUNNING)
     task.transition_to(TaskStatus.FAILED, error="boom")
 
@@ -258,7 +253,7 @@ def test_disallowed_transitions_are_rejected(
 
 def task_with_status(status: TaskStatus) -> Task:
     """Build a task and put it into status using valid public transitions."""
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     match status:
         case TaskStatus.PENDING:

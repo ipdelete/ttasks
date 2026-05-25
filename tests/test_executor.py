@@ -12,6 +12,7 @@ from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
+from conftest import _bash
 
 from ttasks.events import TaskEvent, TaskEventType
 from ttasks.executor import (
@@ -35,13 +36,7 @@ def assert_result_timing(result: TaskResult, before: datetime, after: datetime) 
 
 def test_task_context_exposes_read_only_task_view() -> None:
     """TaskContext exposes task data without exposing lifecycle mutators."""
-    task = Task(
-        title="Example",
-        description="Demo task",
-        payload="echo hi",
-        type=TaskType.BASH,
-        timeout=1.5,
-    )
+    task = Task.bash("echo hi", title="Example", description="Demo task", timeout=1.5)
     context = TaskContext(task)
 
     assert context.id == task.id
@@ -58,8 +53,8 @@ def test_task_context_exposes_read_only_task_view() -> None:
 
 def test_task_context_exposes_read_only_upstream_task_refs() -> None:
     """TaskContext exposes upstream task refs through a read-only mapping."""
-    parent = Task(title="Parent", payload="echo parent", type=TaskType.BASH)
-    child = Task(title="Child", payload="echo child", type=TaskType.BASH)
+    parent = Task.bash("echo parent", title="Parent")
+    child = Task.bash("echo child", title="Child")
     context = TaskContext(child, upstream={parent.id: parent})
     upstream: Any = context.upstream
 
@@ -89,7 +84,7 @@ def test_register_rejects_non_callable_handler() -> None:
 def test_execute_success_emits_started_and_succeeded_events() -> None:
     """Successful execution emits lifecycle events in order."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     events: list[TaskEvent] = []
 
     def handler(context: TaskContext) -> str:
@@ -118,7 +113,7 @@ def test_execute_success_emits_started_and_succeeded_events() -> None:
 def test_execute_failure_emits_started_and_failed_events() -> None:
     """Failed execution emits lifecycle events with error details."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     events: list[TaskEvent] = []
 
     def handler(context: TaskContext) -> None:
@@ -144,7 +139,7 @@ def test_execute_failure_emits_started_and_failed_events() -> None:
 def test_execute_cancellation_emits_started_and_cancelled_events() -> None:
     """Cancelled execution emits lifecycle events with cancellation details."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     events: list[TaskEvent] = []
 
     def handler(context: TaskContext) -> None:
@@ -170,7 +165,7 @@ def test_execute_cancellation_emits_started_and_cancelled_events() -> None:
 def test_retry_after_failure_emits_started_event_from_failed_status() -> None:
     """Retry events preserve the FAILED -> RUNNING transition."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     events: list[TaskEvent] = []
     attempts = 0
 
@@ -199,8 +194,8 @@ def test_retry_after_failure_emits_started_event_from_failed_status() -> None:
 def test_execute_passes_upstream_task_refs_to_handler() -> None:
     """execute() passes upstream task refs into the handler context."""
     executor = TaskExecutor()
-    parent = Task(title="Parent", payload="", type=TaskType.BASH)
-    child = Task(title="Child", payload="", type=TaskType.BASH)
+    parent = Task.bash("", title="Parent")
+    child = Task.bash("", title="Child")
 
     def handler(context: TaskContext) -> str:
         """Assert the handler sees the provided upstream task."""
@@ -218,7 +213,7 @@ def test_execute_passes_upstream_task_refs_to_handler() -> None:
 def test_execute_moves_task_through_running_to_done() -> None:
     """execute() marks a task RUNNING before the handler sees it, then DONE."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     def handler(context: TaskContext) -> str:
         """Assert the executor transitions to RUNNING before dispatch."""
@@ -241,7 +236,7 @@ def test_execute_moves_task_through_running_to_done() -> None:
 def test_task_result_wraps_non_string_raw_values() -> None:
     """Arbitrary handler return values are preserved on TaskResult.raw."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     raw = {"answer": 42}
 
     def handler(context: TaskContext) -> dict[str, int]:
@@ -262,7 +257,7 @@ def test_task_result_wraps_non_string_raw_values() -> None:
 def test_execute_rejects_task_without_registered_handler() -> None:
     """Tasks without handlers are rejected before they start running."""
     executor = TaskExecutor.empty()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     with pytest.raises(ValueError, match="No handler registered for task type 'bash'"):
         executor.execute(task)
@@ -273,7 +268,7 @@ def test_execute_rejects_task_without_registered_handler() -> None:
 def test_handler_failure_marks_task_failed_and_stores_error() -> None:
     """Handler exceptions move the task to FAILED and store the error text."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     def handler(context: TaskContext) -> None:
         """Raise a representative handler failure."""
@@ -291,7 +286,7 @@ def test_handler_failure_marks_task_failed_and_stores_error() -> None:
 def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
     """Cancelled tasks are rejected before any handler side effects occur."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     called = False
 
     def handler(context: TaskContext) -> None:
@@ -312,7 +307,7 @@ def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
 def test_executor_clears_previous_error_on_successful_retry() -> None:
     """A successful retry clears the stale error from a previous failure."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     attempts = 0
 
     def handler(context: TaskContext) -> str:
@@ -343,7 +338,7 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
 def test_successful_execute_sets_task_result_timing() -> None:
     """Successful execution records start, finish, and duration timing."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     before = datetime.now()
     result = executor.execute(task)
@@ -356,7 +351,7 @@ def test_successful_execute_sets_task_result_timing() -> None:
 def test_default_executor_can_execute_bash() -> None:
     """The default executor includes a working BASH handler."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="Example")
 
     result = executor.execute(task)
 
@@ -373,11 +368,7 @@ def test_default_executor_can_execute_bash() -> None:
 def test_bash_task_supports_shell_syntax() -> None:
     """BASH tasks intentionally execute shell syntax such as pipes."""
     executor = TaskExecutor()
-    task = Task(
-        title="Shell syntax",
-        payload="printf 'hello\\n' | grep hello",
-        type=TaskType.BASH,
-    )
+    task = Task.bash("printf 'hello\\n' | grep hello", title="Shell syntax")
 
     result = executor.execute(task)
 
@@ -389,7 +380,7 @@ def test_bash_task_supports_shell_syntax() -> None:
 def test_bash_nonzero_exit_marks_task_failed() -> None:
     """A shell command with a non-zero return code fails the task."""
     executor = TaskExecutor()
-    task = Task(title="Failing command", payload="exit 7", type=TaskType.BASH)
+    task = Task.bash("exit 7", title="Failing command")
 
     with pytest.raises(TaskExecutionError, match="exited with code 7"):
         executor.execute(task)
@@ -402,11 +393,7 @@ def test_bash_nonzero_exit_marks_task_failed() -> None:
 def test_bash_failure_uses_stderr_as_error() -> None:
     """Subprocess stderr is preferred over the generic exit-code message."""
     executor = TaskExecutor()
-    task = Task(
-        title="Failing command",
-        payload="echo boom >&2; exit 1",
-        type=TaskType.BASH,
-    )
+    task = Task.bash("echo boom >&2; exit 1", title="Failing command")
 
     with pytest.raises(TaskExecutionError, match="boom"):
         executor.execute(task)
@@ -419,11 +406,7 @@ def test_bash_failure_uses_stderr_as_error() -> None:
 def test_failed_subprocess_result_preserves_output_error_and_returncode() -> None:
     """Failed subprocesses still attach structured process details."""
     executor = TaskExecutor()
-    task = Task(
-        title="Structured failure",
-        payload="echo before; echo boom >&2; exit 7",
-        type=TaskType.BASH,
-    )
+    task = Task.bash("echo before; echo boom >&2; exit 7", title="Structured failure")
 
     with pytest.raises(TaskExecutionError, match="boom"):
         executor.execute(task)
@@ -439,7 +422,7 @@ def test_failed_subprocess_result_preserves_output_error_and_returncode() -> Non
 def test_running_process_registry_is_cleaned_after_failure() -> None:
     """Failed subprocesses are removed from the running-process registry."""
     executor = TaskExecutor()
-    task = Task(title="Fail", payload="exit 1", type=TaskType.BASH)
+    task = Task.bash("exit 1", title="Fail")
 
     with pytest.raises(RuntimeError):
         executor.execute(task)
@@ -451,7 +434,7 @@ def test_running_process_registry_is_cleaned_after_failure() -> None:
 def test_powershell_task_executes() -> None:
     """PowerShell tasks execute when pwsh is available on the host."""
     executor = TaskExecutor()
-    task = Task(title="PowerShell", payload="'hello'", type=TaskType.POWERSHELL)
+    task = Task.powershell("'hello'", title="PowerShell")
 
     result = executor.execute(task)
 
@@ -464,7 +447,7 @@ def test_powershell_task_executes() -> None:
 def test_bash_task_without_timeout_waits_for_completion() -> None:
     """timeout=None means the subprocess is allowed to run until it exits."""
     executor = TaskExecutor()
-    task = Task(title="No timeout", payload="sleep 0.1; echo done", type=TaskType.BASH)
+    task = Task.bash("sleep 0.1; echo done", title="No timeout")
 
     result = executor.execute(task)
 
@@ -477,12 +460,7 @@ def test_bash_task_without_timeout_waits_for_completion() -> None:
 def test_bash_task_times_out() -> None:
     """A subprocess exceeding task.timeout is terminated and marked FAILED."""
     executor = TaskExecutor()
-    task = Task(
-        title="Slow",
-        payload="sleep 30",
-        type=TaskType.BASH,
-        timeout=0.1,
-    )
+    task = Task.bash("sleep 30", title="Slow", timeout=0.1)
 
     with pytest.raises(TaskTimeoutError, match="Task timed out after 0.1 seconds"):
         executor.execute(task)
@@ -495,10 +473,9 @@ def test_bash_task_times_out() -> None:
 def test_timed_out_subprocess_result_preserves_partial_output() -> None:
     """Timeout results retain output captured before termination."""
     executor = TaskExecutor()
-    task = Task(
+    task = Task.bash(
+        "echo before; echo warn >&2; sleep 30",
         title="Partial timeout",
-        payload="echo before; echo warn >&2; sleep 30",
-        type=TaskType.BASH,
         timeout=0.1,
     )
 
@@ -516,7 +493,7 @@ def test_timed_out_subprocess_result_preserves_partial_output() -> None:
 def test_handler_cancellation_after_return_raises_task_cancelled() -> None:
     """If a handler leaves the task CANCELLED, execute() raises TaskCancelled."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     def handler(context: TaskContext) -> str:
         """Cancel the task before returning a result."""
@@ -534,7 +511,7 @@ def test_handler_cancellation_after_return_raises_task_cancelled() -> None:
 def test_handler_task_cancelled_exception_marks_task_cancelled() -> None:
     """A handler raising TaskCancelled directly leaves the task terminal."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     def handler(context: TaskContext) -> None:
         """Raise cancellation without mutating the task directly."""
@@ -554,7 +531,7 @@ def test_handler_task_cancelled_exception_marks_task_cancelled() -> None:
 def test_handler_error_after_cancellation_raises_task_cancelled() -> None:
     """Handler errors are reported as cancellation if task was cancelled first."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     def handler(context: TaskContext) -> None:
         """Cancel the task, then raise like a terminated worker might."""
@@ -573,7 +550,7 @@ def test_handler_error_after_cancellation_raises_task_cancelled() -> None:
 def test_cancel_without_running_process_only_cancels_task() -> None:
     """Executor cancellation works even when no subprocess is registered."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
 
     executor.cancel(task)
     executor.cancel(task)
@@ -585,7 +562,7 @@ def test_cancel_without_running_process_only_cancels_task() -> None:
 def test_run_command_terminates_if_task_cancelled_during_process_start() -> None:
     """A cancellation between Popen and process registration is still honored."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     task.transition_to(TaskStatus.RUNNING)
     process = Mock(spec=subprocess.Popen)
     process.pid = 12345
@@ -611,7 +588,7 @@ def test_run_command_terminates_if_task_cancelled_during_process_start() -> None
 def test_run_command_reports_cancelled_nonzero_process_as_task_cancelled() -> None:
     """A cancelled task with a non-zero process exit raises TaskCancelled."""
     executor = TaskExecutor()
-    task = Task(title="Example", payload="", type=TaskType.BASH)
+    task = Task.bash("", title="Example")
     task.transition_to(TaskStatus.RUNNING)
     task.cancel()
 
@@ -766,7 +743,7 @@ def test_default_prompt_handler_uses_copilot_sdk(
     """The default PROMPT handler sends one no-tools Copilot prompt."""
     recorded = install_fake_copilot(monkeypatch, content="hello back")
     executor = TaskExecutor()
-    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+    task = Task.prompt("hello", title="Prompt")
 
     result = executor.execute(task)
 
@@ -789,7 +766,7 @@ def test_copilot_prompt_handler_uses_task_timeout(
     """Task timeout overrides the Copilot prompt handler default timeout."""
     recorded = install_fake_copilot(monkeypatch, content="done")
     executor = TaskExecutor()
-    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT, timeout=2.5)
+    task = Task.prompt("hello", title="Prompt", timeout=2.5)
 
     executor.execute(task)
 
@@ -806,7 +783,7 @@ def test_copilot_prompt_handler_allows_model_override(
         TaskType.PROMPT,
         make_copilot_prompt_handler(model="gpt-custom", timeout=12),
     )
-    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+    task = Task.prompt("hello", title="Prompt")
 
     executor.execute(task)
 
@@ -823,7 +800,7 @@ def test_copilot_prompt_handler_none_response_returns_empty_string(
     """A prompt with no assistant message normalizes to empty output."""
     install_fake_copilot(monkeypatch, content=None)
     executor = TaskExecutor()
-    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+    task = Task.prompt("hello", title="Prompt")
 
     result = executor.execute(task)
 
@@ -836,7 +813,7 @@ def test_copilot_prompt_handler_unknown_response_data_returns_empty_string(
     """Unexpected Copilot response data normalizes to empty output."""
     install_fake_copilot(monkeypatch, data=object())
     executor = TaskExecutor()
-    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+    task = Task.prompt("hello", title="Prompt")
 
     result = executor.execute(task)
 
@@ -849,7 +826,7 @@ def test_copilot_prompt_handler_sdk_error_marks_task_failed(
     """Copilot SDK errors follow normal task failure handling."""
     install_fake_copilot(monkeypatch, error=RuntimeError("sdk boom"))
     executor = TaskExecutor()
-    task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
+    task = Task.prompt("hello", title="Prompt")
 
     with pytest.raises(RuntimeError, match="sdk boom"):
         executor.execute(task)
@@ -870,7 +847,7 @@ def test_default_agent_handler_uses_copilot_sdk_with_tools_enabled(
     """The default AGENT handler sends one tool-capable Copilot instruction."""
     recorded = install_fake_copilot(monkeypatch, content="agent done")
     executor = TaskExecutor()
-    task = Task(title="Agent", payload="inspect repo", type=TaskType.AGENT)
+    task = Task.agent("inspect repo", title="Agent")
 
     result = executor.execute(task)
 
@@ -890,7 +867,7 @@ def test_copilot_agent_handler_uses_task_timeout(
     """Task timeout overrides the Copilot agent handler no-timeout default."""
     recorded = install_fake_copilot(monkeypatch, content="done")
     executor = TaskExecutor()
-    task = Task(title="Agent", payload="hello", type=TaskType.AGENT, timeout=3.5)
+    task = Task.agent("hello", title="Agent", timeout=3.5)
 
     executor.execute(task)
 
@@ -904,7 +881,7 @@ def test_copilot_agent_handler_allows_model_override(
     recorded = install_fake_copilot(monkeypatch, content="done")
     executor = TaskExecutor()
     executor.register(TaskType.AGENT, make_copilot_agent_handler(model="agent-custom"))
-    task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
+    task = Task.agent("hello", title="Agent")
 
     executor.execute(task)
 
@@ -919,7 +896,7 @@ def test_copilot_agent_handler_sdk_error_marks_task_failed(
     """Copilot agent SDK errors follow normal task failure handling."""
     install_fake_copilot(monkeypatch, error=RuntimeError("agent boom"))
     executor = TaskExecutor()
-    task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
+    task = Task.agent("hello", title="Agent")
 
     with pytest.raises(RuntimeError, match="agent boom"):
         executor.execute(task)
@@ -931,7 +908,7 @@ def test_copilot_agent_handler_sdk_error_marks_task_failed(
 def test_cancel_stops_in_flight_bash_task() -> None:
     """Cancelling a running bash task terminates its subprocess."""
     executor = TaskExecutor()
-    task = Task(title="Long running", payload="sleep 30", type=TaskType.BASH)
+    task = Task.bash("sleep 30", title="Long running")
     errors: list[BaseException] = []
 
     def run_task() -> None:
@@ -968,13 +945,13 @@ def test_cancel_stops_in_flight_bash_task() -> None:
 
 def test_task_result_is_none_before_execution() -> None:
     """A freshly-constructed task has no result yet."""
-    task = Task(title="X", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="X")
     assert task.result is None
 
 
 def test_successful_execute_sets_task_result() -> None:
     """A task that completes successfully carries its TaskResult on the task."""
-    task = Task(title="X", payload="echo hi", type=TaskType.BASH)
+    task = Task.bash("echo hi", title="X")
     executor = TaskExecutor()
     returned = executor.execute(task)
 
@@ -986,7 +963,7 @@ def test_successful_execute_sets_task_result() -> None:
 
 def test_failed_execute_sets_task_result_with_failed_status() -> None:
     """A task that fails still produces a TaskResult attached to the task."""
-    task = Task(title="X", payload="exit 1", type=TaskType.BASH)
+    task = Task.bash("exit 1", title="X")
     executor = TaskExecutor()
 
     before = datetime.now()
@@ -1003,7 +980,7 @@ def test_failed_execute_sets_task_result_with_failed_status() -> None:
 
 def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
     """A task cancelled mid-run still produces a TaskResult on the task."""
-    task = Task(title="X", payload="sleep 5", type=TaskType.BASH)
+    task = Task.bash("sleep 5", title="X")
     executor = TaskExecutor()
     errors: list[BaseException] = []
 
@@ -1040,7 +1017,7 @@ def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
 
 def test_retry_after_failure_replaces_task_result() -> None:
     """Re-running a failed task overwrites task.result, doesn't keep the old one."""
-    task = Task(title="X", payload="exit 1", type=TaskType.BASH)
+    task = Task.bash("exit 1", title="X")
     executor = TaskExecutor()
 
     with pytest.raises(RuntimeError):
@@ -1062,9 +1039,6 @@ def test_retry_after_failure_replaces_task_result() -> None:
 # ---- store-backed auto-persistence ------------------------------------------
 
 
-def _bash_task(payload: str = "echo ok") -> Task:
-    """Return a fresh bash task used by the auto-persist tests."""
-    return Task.bash(payload, title="t")
 
 
 def test_executor_without_store_does_not_record_persistence() -> None:
@@ -1072,7 +1046,7 @@ def test_executor_without_store_does_not_record_persistence() -> None:
     from ttasks.store import InMemoryStore  # noqa: F401  (import keeps API alive)
 
     executor = TaskExecutor()
-    task = _bash_task()
+    task = _bash()
     executor.execute(task)
     assert executor.store is None
     assert executor.persistence_errors == []
@@ -1113,7 +1087,7 @@ def test_executor_auto_persists_each_lifecycle_transition() -> None:
             return self._inner.graphs
 
     executor = TaskExecutor(store=_RecordingStore(store))
-    task = _bash_task()
+    task = _bash()
     executor.execute(task)
 
     assert TaskStatus.RUNNING in saved_statuses
@@ -1135,7 +1109,7 @@ def test_executor_saves_before_emitting_lifecycle_event() -> None:
             observed.append(snapshot.status)
 
     executor.events.subscribe(on_event)
-    task = _bash_task()
+    task = _bash()
     executor.execute(task)
 
     assert TaskStatus.RUNNING in observed
@@ -1162,7 +1136,7 @@ def test_persistence_failure_is_recorded_and_emitted_not_raised() -> None:
     executor = TaskExecutor(store=_BrokenStore())
     executor.events.subscribe(events.append)
 
-    task = _bash_task()
+    task = _bash()
     result = executor.execute(task)
 
     assert result.status == TaskStatus.DONE
