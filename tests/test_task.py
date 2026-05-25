@@ -123,6 +123,18 @@ def test_cancel_is_idempotent() -> None:
     assert task.status == TaskStatus.CANCELLED
 
 
+def test_cancel_after_success_is_no_op() -> None:
+    """Cancelling an already-succeeded task leaves the success intact."""
+    task = Task.bash("echo hi", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.SUCCEEDED)
+
+    task.cancel()
+
+    assert task.status == TaskStatus.SUCCEEDED
+    assert task.error is None
+
+
 def test_cancel_preserves_previous_error() -> None:
     """Cancelling a failed task keeps the failure reason for inspection."""
     task = Task.bash("echo hi", title="Example")
