@@ -20,21 +20,6 @@ from ttasks import Task, TaskEvent, TaskExecutor, TaskGraph
 from ttasks.storage.sqlite import SQLiteStore
 
 
-def _bash(title: str, payload: str) -> Task:
-    """Shorthand for the demo: create a bash one-liner task."""
-    return Task.bash(payload, title=title)
-
-
-def _prompt(title: str, payload: str) -> Task:
-    """Shorthand for the demo: create a Copilot prompt task."""
-    return Task.prompt(payload, title=title, timeout=30)
-
-
-def _agent(title: str, payload: str) -> Task:
-    """Shorthand for the demo: create a Copilot agent task."""
-    return Task.agent(payload, title=title, timeout=60)
-
-
 def _print_graph(graph: TaskGraph) -> None:
     """Show topology + outcome for one graph."""
     roots = ", ".join(t.title for t in graph.roots()) or "(none)"
@@ -73,12 +58,13 @@ def main() -> None:
     unsubscribe_print = executor.events.subscribe(_print_event)
 
     # Graph alpha: X -> Y -> Z (linear; Z is a tool-capable agent task).
-    x = _bash("X", "echo x")
-    y = _bash("Y", "echo y")
-    z = _agent(
-        "Z",
+    x = Task.bash("echo x", title="X")
+    y = Task.bash("echo y", title="Y")
+    z = Task.agent(
         "Read README.md in the current directory and summarize the project "
         "in one concise sentence.",
+        title="Z",
+        timeout=60,
     )
     alpha = TaskGraph(title="alpha")
     alpha.add(x)
@@ -87,12 +73,13 @@ def main() -> None:
     store.graphs.save(alpha)
 
     # Graph beta: P -> {Q, R, S} (fan-out; S is a no-tools prompt task).
-    p = _bash("P", "echo p")
-    q = _bash("Q", "echo q")
-    r = _bash("R", "echo r")
-    s = _prompt(
-        "S",
+    p = Task.bash("echo p", title="P")
+    q = Task.bash("echo q", title="Q")
+    r = Task.bash("echo r", title="R")
+    s = Task.prompt(
         "Reply with exactly this text and no punctuation: ttasks prompt ok",
+        title="S",
+        timeout=30,
     )
     beta = TaskGraph(title="beta")
     beta.add(p)
@@ -102,8 +89,8 @@ def main() -> None:
     store.graphs.save(beta)
 
     # Graph gamma: F fails, G is blocked. Demonstrates the blocked view.
-    f = _bash("F", "exit 1")
-    g = _bash("G", "echo g")
+    f = Task.bash("exit 1", title="F")
+    g = Task.bash("echo g", title="G")
     gamma = TaskGraph(title="gamma")
     gamma.add(f)
     gamma.add(g, after=[f])
