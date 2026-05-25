@@ -161,6 +161,53 @@ def test_is_optional_reflects_required_flag_on_finally_tasks() -> None:
     assert not graph.is_optional(required)
 
 
+def test_finally_optional_and_required_task_views_are_ordered_snapshots() -> None:
+    """Task metadata views follow graph order without exposing internal sets."""
+    setup = _bash("Setup", "echo setup")
+    optional_cleanup = _bash("Optional", "echo optional")
+    build = _bash("Build", "echo build")
+    required_cleanup = _bash("Required", "echo required")
+    publish = _bash("Publish", "echo publish")
+    graph = TaskGraph()
+
+    graph.add(setup)
+    graph.add(optional_cleanup, after=[setup], finally_=True, required=False)
+    graph.add(build, after=[setup])
+    graph.add(required_cleanup, after=[build], finally_=True)
+    graph.add(publish, after=[build])
+
+    assert graph.finally_tasks == [optional_cleanup, required_cleanup]
+    assert graph.optional_tasks == [optional_cleanup]
+    assert graph.required_tasks == [setup, build, required_cleanup, publish]
+
+    returned = graph.optional_tasks
+    returned.clear()
+    assert graph.optional_tasks == [optional_cleanup]
+
+
+def test_finally_optional_and_required_views_follow_readded_task_metadata() -> None:
+    """Re-adding a task updates the public optional/finally task views."""
+    setup = _bash("Setup", "echo setup")
+    cleanup = _bash("Cleanup", "echo cleanup")
+    graph = TaskGraph()
+    graph.add(setup)
+
+    graph.add(cleanup, after=[setup], finally_=True, required=False)
+    assert graph.finally_tasks == [cleanup]
+    assert graph.optional_tasks == [cleanup]
+    assert graph.required_tasks == [setup]
+
+    graph.add(cleanup, after=[setup], finally_=True)
+    assert graph.finally_tasks == [cleanup]
+    assert graph.optional_tasks == []
+    assert graph.required_tasks == [setup, cleanup]
+
+    graph.add(cleanup, after=[setup])
+    assert graph.finally_tasks == []
+    assert graph.optional_tasks == []
+    assert graph.required_tasks == [setup, cleanup]
+
+
 # ---- Validation --------------------------------------------------------------
 
 
@@ -560,6 +607,35 @@ def test_required_finally_failure_makes_graph_not_ok() -> None:
     graph.run(executor)
 
     assert report.status == TaskStatus.FAILED
+    assert not graph.ok
+
+
+def test_optional_required_failure_and_blocked_views_split_statuses() -> None:
+    """Post-run status views classify optional and required task outcomes."""
+    root = _bash("Root", "")
+    required_fail = _bash("Required fail", "")
+    optional_fail = _bash("Optional fail", "")
+    blocked = _bash("Blocked", "")
+    executor = TaskExecutor()
+
+    def handler(context) -> str:
+        """Fail the two report targets and let the root succeed."""
+        if context.id == root.id:
+            return "root"
+        raise RuntimeError(context.title)
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph.add(root)
+    graph.add(required_fail, after=[root])
+    graph.add(optional_fail, after=[root], finally_=True, required=False)
+    graph.add(blocked, after=[required_fail])
+
+    graph.run(executor)
+
+    assert graph.optional_failed == [optional_fail]
+    assert graph.required_failed == [required_fail]
+    assert graph.required_blocked == [blocked]
     assert not graph.ok
 
 

@@ -136,6 +136,21 @@ class TaskGraph:
         """Return whether ``task`` is a finally task with ``required=False``."""
         return task.id in self._optional
 
+    @property
+    def finally_tasks(self) -> list[Task]:
+        """Tasks registered with ``finally_=True``, in graph insertion order."""
+        return [t for t in self if t.id in self._finally]
+
+    @property
+    def optional_tasks(self) -> list[Task]:
+        """Tasks registered with ``finally_=True, required=False``."""
+        return [t for t in self if t.id in self._optional]
+
+    @property
+    def required_tasks(self) -> list[Task]:
+        """Tasks whose failure contributes to :attr:`ok`, in insertion order."""
+        return [t for t in self if t.id not in self._optional]
+
     def items(self) -> Iterator[tuple[Task, list[Task]]]:
         """Yield ``(task, deps)`` pairs in insertion order."""
         for tid in self._deps:
@@ -163,6 +178,33 @@ class TaskGraph:
     def blocked(self) -> list[Task]:
         """Tasks in this graph whose status is BLOCKED."""
         return [t for t in self if t.status == TaskStatus.BLOCKED]
+
+    @property
+    def optional_failed(self) -> list[Task]:
+        """Optional tasks in FAILED status.
+
+        This is a status-specific view for reporting. Use :attr:`ok` as the
+        authoritative graph success predicate.
+        """
+        return [t for t in self.failed if t.id in self._optional]
+
+    @property
+    def required_failed(self) -> list[Task]:
+        """Required tasks in FAILED status.
+
+        This is a status-specific view for reporting. Use :attr:`ok` as the
+        authoritative graph success predicate.
+        """
+        return [t for t in self.failed if t.id not in self._optional]
+
+    @property
+    def required_blocked(self) -> list[Task]:
+        """Required tasks in BLOCKED status.
+
+        This is a status-specific view for reporting. Use :attr:`ok` as the
+        authoritative graph success predicate.
+        """
+        return [t for t in self.blocked if t.id not in self._optional]
 
     @property
     def errors(self) -> dict[str, BaseException]:

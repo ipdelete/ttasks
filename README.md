@@ -425,6 +425,12 @@ Useful graph views:
 - `graph.failed`
 - `graph.cancelled`
 - `graph.blocked`
+- `graph.finally_tasks`
+- `graph.optional_tasks`
+- `graph.required_tasks`
+- `graph.optional_failed`
+- `graph.required_failed`
+- `graph.required_blocked`
 - `graph.errors`
 - `graph.roots()`
 - `graph.leaves()`
@@ -473,6 +479,12 @@ A finally task receives the listed `after` tasks through `context.upstream`, jus
 like normal dependencies. `required=False` makes failures visible in graph views
 without making `graph.ok` false, which is useful for optional reporting tasks
 such as AI recommendations or artifact collection.
+
+Use `graph.finally_tasks`, `graph.optional_tasks`, and `graph.required_tasks` to
+display task metadata without relying on private internals. After a run,
+`graph.optional_failed`, `graph.required_failed`, and `graph.required_blocked`
+split status-specific outcome views for reporting; `graph.ok` remains the
+authoritative success predicate.
 
 ## Documentation
 

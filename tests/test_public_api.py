@@ -14,6 +14,7 @@ from ttasks import _graph as graph_mod
 from ttasks import _sqlite as sqlite_mod
 from ttasks import _store as store_mod
 from ttasks import _task as task_mod
+from ttasks import _version as version_mod
 
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
@@ -75,3 +76,19 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     )
     assert ttasks.TaskGraph is graph_mod.TaskGraph
 
+
+def test_generated_version_module_exports_consistent_aliases() -> None:
+    """The generated VCS version module exposes stable alias names."""
+    assert set(version_mod.__all__) == {
+        "__version__",
+        "__version_tuple__",
+        "version",
+        "version_tuple",
+        "__commit_id__",
+        "commit_id",
+    }
+    assert version_mod.__version__ == version_mod.version
+    assert version_mod.__version_tuple__ == version_mod.version_tuple
+    assert version_mod.__commit_id__ == version_mod.commit_id
+    assert isinstance(version_mod.version, str)
+    assert isinstance(version_mod.version_tuple, tuple)
