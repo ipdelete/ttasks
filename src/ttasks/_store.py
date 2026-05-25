@@ -103,7 +103,9 @@ class InMemoryTaskCollection(MutableMapping[str, Task]):
     def __contains__(self, key: object) -> bool:
         """Return whether ``key`` (task or task id) is present."""
         if isinstance(key, Task):
-            return key.id in self._tasks
+            key = key.id
+        if not isinstance(key, str):
+            return False
         return key in self._tasks
 
     def __repr__(self) -> str:
@@ -153,7 +155,9 @@ class InMemoryGraphCollection(MutableMapping[str, "TaskGraph"]):
     def __contains__(self, key: object) -> bool:
         """Return whether ``key`` (graph or graph id) is present."""
         if isinstance(key, TaskGraph):
-            return key.id in self._graphs
+            key = key.id
+        if not isinstance(key, str):
+            return False
         return key in self._graphs
 
     def __repr__(self) -> str:

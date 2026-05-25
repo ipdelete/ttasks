@@ -51,6 +51,10 @@ class TestInMemoryTaskCollection:
         assert task in tasks
         assert "missing" not in tasks
 
+    def test_contains_returns_false_for_unhashable_non_keys(self) -> None:
+        tasks = InMemoryTaskCollection()
+        assert [] not in tasks
+
     def test_len_reflects_stored_tasks(self) -> None:
         tasks = InMemoryTaskCollection()
         assert len(tasks) == 0
@@ -108,6 +112,10 @@ class TestInMemoryGraphCollection:
         graph = TaskGraph()
         graphs.save(graph)
         assert graph in graphs
+
+    def test_contains_returns_false_for_unhashable_non_keys(self) -> None:
+        graphs = InMemoryGraphCollection()
+        assert [] not in graphs
 
     def test_setitem_rejects_non_graph(self) -> None:
         bogus = _opaque("not a graph")
