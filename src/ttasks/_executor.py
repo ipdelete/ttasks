@@ -167,8 +167,8 @@ class TaskExecutor:
         emits the BLOCKED event so observers and the store see the outcome.
         """
         previous_status = task.status
-        task._set_blocked_by(parent_id)
         task.transition_to(TaskStatus.BLOCKED)
+        task._set_blocked_by(parent_id)
         self._emit(task, TaskEventType.BLOCKED, previous_status)
 
     def _terminalize(
