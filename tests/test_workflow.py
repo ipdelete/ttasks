@@ -353,6 +353,26 @@ def test_diamond_runs_with_parallelism() -> None:
 # ---- Failure policy ----------------------------------------------------------
 
 
+def test_required_executor_error_makes_graph_not_ok_even_if_status_succeeded() -> None:
+    """A required task future error makes graph.ok false even with success status."""
+
+    class BrokenExecutor(TaskExecutor):
+        def execute(self, task, upstream=None):
+            task.transition_to(TaskStatus.RUNNING)
+            task.transition_to(TaskStatus.SUCCEEDED)
+            raise RuntimeError("executor post-processing failed")
+
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+
+    graph.run(BrokenExecutor())
+
+    assert a.status == TaskStatus.SUCCEEDED
+    assert a.id in graph.errors
+    assert not graph.ok
+
+
 def test_graph_records_executor_errors() -> None:
     """Pre-start handler errors terminalize the task as FAILED with the error."""
     a = _bash("A", "echo a")
