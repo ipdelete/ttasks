@@ -30,6 +30,10 @@ testpaths = ["tests"]
 addopts = [
     "--cov=ttasks",
     "--cov-report=term-missing",
+    "-m", "not live",
+]
+markers = [
+    "live: end-to-end tests that build real graphs and run a real TaskExecutor (deselected by default; run with `uv run pytest -m live`)",
 ]
 
 [tool.ruff]
