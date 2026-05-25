@@ -1079,6 +1079,32 @@ def test_within_run_blocked_is_not_retried_same_run() -> None:
     assert attempts["B"] == 0
 
 
+def test_finally_waits_for_retryable_failed_dependency_added_later() -> None:
+    """A finally task waits for a retryable failed dependency to rerun first."""
+    parent = _bash("parent", "")
+    parent.transition_to(TaskStatus.RUNNING)
+    parent.transition_to(TaskStatus.FAILED, error="old failure")
+    cleanup = _bash("cleanup", "")
+    seen: list[str] = []
+
+    executor = TaskExecutor.empty()
+
+    def handler(context: Any) -> str:
+        seen.append(context.title)
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph.add(cleanup, after=[parent], finally_=True)
+    graph[parent] = []
+
+    graph.run(executor, max_workers=1)
+
+    assert seen == ["parent", "cleanup"]
+    assert parent.status == TaskStatus.SUCCEEDED
+    assert cleanup.status == TaskStatus.SUCCEEDED
+
+
 def test_finally_runs_after_carryover_blocked_recovers() -> None:
     """A finally task fires after a carryover-BLOCKED task recovers to SUCCEEDED."""
     finally_ran: list[str] = []
