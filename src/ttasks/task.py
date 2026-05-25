@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import cast
+from typing import Any, cast
 
 
 class TaskStatus(Enum):
@@ -276,14 +276,17 @@ class TaskResult:
         duration: float,
     ) -> TaskResult:
         """Normalize a handler return value into a timed TaskResult."""
+        base: dict[str, Any] = dict(
+            task_id=task.id,
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration=duration,
+        )
         if isinstance(raw, subprocess.CompletedProcess):
             completed = cast("subprocess.CompletedProcess[str]", raw)
             return cls(
-                task_id=task.id,
-                status=status,
-                started_at=started_at,
-                finished_at=finished_at,
-                duration=duration,
+                **base,
                 output=completed.stdout or "",
                 error=completed.stderr or None,
                 returncode=completed.returncode,
@@ -291,21 +294,6 @@ class TaskResult:
             )
 
         if isinstance(raw, str):
-            return cls(
-                task_id=task.id,
-                status=status,
-                started_at=started_at,
-                finished_at=finished_at,
-                duration=duration,
-                output=raw,
-                raw=raw,
-            )
+            return cls(**base, output=raw, raw=raw)
 
-        return cls(
-            task_id=task.id,
-            status=status,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration=duration,
-            raw=raw,
-        )
+        return cls(**base, raw=raw)
