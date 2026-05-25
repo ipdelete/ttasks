@@ -110,6 +110,24 @@ class TestSQLiteTaskCollection:
         SQLiteStore(store_path).tasks.save(task)
         assert SQLiteStore(store_path).tasks[task.id].title == task.title
 
+    def test_delitem_missing_task_raises_key_error(self, store: SQLiteStore) -> None:
+        with pytest.raises(KeyError):
+            del store.tasks["missing"]
+
+    def test_len_and_non_string_contains(self, store: SQLiteStore) -> None:
+        assert len(store.tasks) == 0
+        store.tasks.save(_bash("A"))
+        store.tasks.save(_bash("B"))
+        assert len(store.tasks) == 2
+        # Non-Task, non-str keys cannot match a primary key.
+        assert 123 not in store.tasks
+
+    def test_cancel_persists_cancelled_status(self, store: SQLiteStore) -> None:
+        task = _bash()
+        store.tasks.save(task)
+        store.tasks.cancel(task.id)
+        assert store.tasks[task.id].status == TaskStatus.CANCELLED
+
 
 # ---- graphs collection ------------------------------------------------------
 
@@ -206,6 +224,28 @@ class TestSQLiteGraphCollection:
         loaded = SQLiteStore(store_path).graphs[graph.id]
         assert loaded.title == "persist"
         assert list(loaded)[0].id == a.id
+
+    def test_delitem_missing_graph_raises_key_error(self, store: SQLiteStore) -> None:
+        with pytest.raises(KeyError):
+            del store.graphs["missing"]
+
+    def test_iter_len_and_contains_variants(self, store: SQLiteStore) -> None:
+        assert len(store.graphs) == 0
+        assert list(iter(store.graphs)) == []
+        g1, g2 = TaskGraph(title="one"), TaskGraph(title="two")
+        store.graphs.save(g1)
+        store.graphs.save(g2)
+        assert set(iter(store.graphs)) == {g1.id, g2.id}
+        assert len(store.graphs) == 2
+        # Membership accepts a TaskGraph instance and rejects non-str keys.
+        assert g1 in store.graphs
+        assert 123 not in store.graphs
+
+
+def test_sqlite_store_repr_includes_database_path(store_path: Path) -> None:
+    """repr is a quick way to surface the underlying database file."""
+    store = SQLiteStore(store_path)
+    assert repr(store) == f"SQLiteStore({store_path!s})"
 
 
 # ---- end-to-end with TaskGraph.run + auto-save ------------------------------

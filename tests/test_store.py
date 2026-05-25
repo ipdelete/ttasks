@@ -163,3 +163,17 @@ class TestInMemoryStore:
         for name in ("save", "__getitem__", "__setitem__", "__iter__", "__len__"):
             assert callable(getattr(store.tasks, name))
             assert callable(getattr(store.graphs, name))
+
+    def test_repr_shows_counts_and_iteration_over_graphs(self) -> None:
+        """repr + Mapping plumbing for all three in-memory containers."""
+        store = InMemoryStore()
+        store.tasks.save(_bash())
+        g1, g2 = TaskGraph(), TaskGraph()
+        store.graphs.save(g1)
+        store.graphs.save(g2)
+
+        assert repr(store.tasks) == "InMemoryTaskCollection(1 tasks)"
+        assert repr(store.graphs) == "InMemoryGraphCollection(2 graphs)"
+        assert repr(store) == "InMemoryStore(1 tasks, 2 graphs)"
+        assert list(iter(store.graphs)) == [g1.id, g2.id]
+        assert len(store.graphs) == 2

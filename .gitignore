@@ -21,3 +21,6 @@ site/
 
 # Editor / OS noise
 .DS_Store
+
+# Demo artifacts
+ttasks-demo.db

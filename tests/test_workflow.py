@@ -893,6 +893,18 @@ def test_add_required_false_without_finally_raises() -> None:
         graph.add(a, required=False)
 
 
+def test_add_rejects_non_task_and_non_bool_finally() -> None:
+    """add() validates the task type and the finally_ flag's type."""
+    graph = TaskGraph()
+    bogus: Any = "not a task"
+    bad_finally: Any = "yes"
+
+    with pytest.raises(TypeError, match="Expected Task"):
+        graph.add(bogus)
+    with pytest.raises(TypeError, match="finally_ must be a bool"):
+        graph.add(_bash("A", "echo a"), finally_=bad_finally)
+
+
 def test_add_runs_like_setitem_form() -> None:
     """A graph built with .add() executes to the same end state as the mapping form."""
     a = _bash("A", "echo a")
