@@ -433,6 +433,30 @@ DEFAULT_COPILOT_PROMPT_TIMEOUT = 60.0
 DEFAULT_COPILOT_AGENT_MODEL = "gpt-5.5"
 
 
+def _make_copilot_handler(
+    *,
+    model: str,
+    default_timeout: float | None,
+    tools_enabled: bool,
+) -> TaskHandler:
+    """Return a handler that drives one Copilot turn per task execution."""
+    if not model:
+        raise ValueError("model must not be empty")
+
+    def handler(context: TaskContext) -> str:
+        """Run one synchronous Copilot task through the async SDK."""
+        return asyncio.run(
+            _run_copilot_text(
+                context,
+                model=model,
+                default_timeout=default_timeout,
+                tools_enabled=tools_enabled,
+            )
+        )
+
+    return handler
+
+
 def make_copilot_prompt_handler(
     *,
     model: str = DEFAULT_COPILOT_PROMPT_MODEL,
@@ -444,23 +468,11 @@ def make_copilot_prompt_handler(
     tools with an empty available_tools allowlist, and returns the assistant
     message content as task output. context.timeout overrides timeout per task.
     """
-    if not model:
-        raise ValueError("model must not be empty")
     if timeout <= 0:
         raise ValueError("timeout must be greater than 0")
-
-    def handler(context: TaskContext) -> str:
-        """Run one synchronous prompt task through the async Copilot SDK."""
-        return asyncio.run(
-            _run_copilot_text(
-                context,
-                model=model,
-                default_timeout=timeout,
-                tools_enabled=False,
-            )
-        )
-
-    return handler
+    return _make_copilot_handler(
+        model=model, default_timeout=timeout, tools_enabled=False,
+    )
 
 
 def make_copilot_agent_handler(
@@ -474,21 +486,9 @@ def make_copilot_agent_handler(
     returns the assistant message content as task output. context.timeout is
     used when provided; otherwise no ttasks timeout is applied.
     """
-    if not model:
-        raise ValueError("model must not be empty")
-
-    def handler(context: TaskContext) -> str:
-        """Run one synchronous agent task through the async Copilot SDK."""
-        return asyncio.run(
-            _run_copilot_text(
-                context,
-                model=model,
-                default_timeout=None,
-                tools_enabled=True,
-            )
-        )
-
-    return handler
+    return _make_copilot_handler(
+        model=model, default_timeout=None, tools_enabled=True,
+    )
 
 
 async def _run_copilot_text(
