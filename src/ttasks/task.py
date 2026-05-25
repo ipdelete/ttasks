@@ -92,6 +92,40 @@ class Task:
         """Return the current lifecycle state without allowing direct writes."""
         return self._status
 
+    @property
+    def is_pending(self) -> bool:
+        """Return whether the task is in the PENDING state."""
+        return self._status == TaskStatus.PENDING
+
+    @property
+    def is_running(self) -> bool:
+        """Return whether the task is in the RUNNING state."""
+        return self._status == TaskStatus.RUNNING
+
+    @property
+    def is_done(self) -> bool:
+        """Return whether the task has completed successfully."""
+        return self._status == TaskStatus.DONE
+
+    @property
+    def is_failed(self) -> bool:
+        """Return whether the task is in the FAILED state."""
+        return self._status == TaskStatus.FAILED
+
+    @property
+    def is_cancelled(self) -> bool:
+        """Return whether the task is in the CANCELLED state."""
+        return self._status == TaskStatus.CANCELLED
+
+    @property
+    def is_terminal(self) -> bool:
+        """Return whether the task is in a terminal state (DONE/FAILED/CANCELLED)."""
+        return self._status in {
+            TaskStatus.DONE,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+        }
+
     def can_transition_to(self, status: TaskStatus) -> bool:
         """Return whether the task may move from its current state to status."""
         if not isinstance(status, TaskStatus):

@@ -275,3 +275,36 @@ def task_with_status(status: TaskStatus) -> Task:
             task.cancel()
 
     return task
+
+
+@pytest.mark.parametrize(
+    ("status", "predicate", "expected"),
+    [
+        (TaskStatus.PENDING, "is_pending", True),
+        (TaskStatus.PENDING, "is_running", False),
+        (TaskStatus.PENDING, "is_done", False),
+        (TaskStatus.PENDING, "is_failed", False),
+        (TaskStatus.PENDING, "is_cancelled", False),
+        (TaskStatus.PENDING, "is_terminal", False),
+        (TaskStatus.RUNNING, "is_pending", False),
+        (TaskStatus.RUNNING, "is_running", True),
+        (TaskStatus.RUNNING, "is_done", False),
+        (TaskStatus.RUNNING, "is_terminal", False),
+        (TaskStatus.DONE, "is_done", True),
+        (TaskStatus.DONE, "is_running", False),
+        (TaskStatus.DONE, "is_terminal", True),
+        (TaskStatus.FAILED, "is_failed", True),
+        (TaskStatus.FAILED, "is_done", False),
+        (TaskStatus.FAILED, "is_terminal", True),
+        (TaskStatus.CANCELLED, "is_cancelled", True),
+        (TaskStatus.CANCELLED, "is_pending", False),
+        (TaskStatus.CANCELLED, "is_terminal", True),
+    ],
+)
+def test_status_predicates(
+    status: TaskStatus, predicate: str, expected: bool
+) -> None:
+    """Status predicate properties reflect the current TaskStatus."""
+    task = task_with_status(status)
+
+    assert getattr(task, predicate) is expected
