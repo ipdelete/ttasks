@@ -2,7 +2,7 @@ r"""Executable demo: one shared store, three DAGs, graph-level views.
 
 The executor is wired to a :class:`SQLiteStore`, so every task is durably
 persisted on each lifecycle transition without any event-subscriber
-plumbing. Graphs are persisted explicitly with ``store.graphs[g.id] = g``.
+plumbing. Graphs auto-persist when run with an executor that has a store.
 
 The graph itself answers post-run questions (ok? succeeded? failed?
 blocked?) and topology questions (roots, leaves) without forcing the
@@ -69,7 +69,6 @@ def main() -> None:
     alpha.add(x)
     alpha.add(y, after=[x])
     alpha.add(z, after=[y])
-    store.graphs.save(alpha)
 
     # Graph beta: P -> {Q, R, S} (fan-out; S is a no-tools prompt task).
     p = Task.bash("echo p", title="P")
@@ -85,7 +84,6 @@ def main() -> None:
     beta.add(q, after=[p])
     beta.add(r, after=[p])
     beta.add(s, after=[p])
-    store.graphs.save(beta)
 
     # Graph gamma: F fails, G is blocked. Demonstrates the blocked view.
     f = Task.bash("exit 1", title="F")
@@ -93,7 +91,6 @@ def main() -> None:
     gamma = TaskGraph(title="gamma")
     gamma.add(f)
     gamma.add(g, after=[f])
-    store.graphs.save(gamma)
 
     # run() returns the graph itself, so calls are chainable.
     start = time.monotonic()

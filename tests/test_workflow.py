@@ -215,6 +215,31 @@ def test_run_raises_on_larger_cycle() -> None:
         graph.run(TaskExecutor())
 
 
+def test_run_rejects_stale_running_task() -> None:
+    """A pre-existing RUNNING task is rejected at run() instead of deadlocking."""
+    a = _bash("A", "echo a")
+    a.transition_to(TaskStatus.RUNNING)
+    graph = TaskGraph()
+    graph[a] = []
+
+    with pytest.raises(ValueError, match="RUNNING"):
+        graph.run(TaskExecutor())
+
+
+def test_run_no_progress_guard_raises_runtime_error() -> None:
+    """Scheduler deadlock raises RuntimeError from run() instead of hanging."""
+    # Synthesize a stuck state by skipping validation and putting a task in
+    # RUNNING. _run_inner cannot transition RUNNING → RUNNING and cannot
+    # treat it as finished, so the no-progress guard must fire.
+    a = _bash("A", "echo a")
+    a.transition_to(TaskStatus.RUNNING)
+    graph = TaskGraph()
+    graph[a] = []
+
+    with pytest.raises(RuntimeError, match="no progress"):
+        graph._run_inner(TaskExecutor(), max_workers=1)
+
+
 # ---- Execution ---------------------------------------------------------------
 
 
@@ -286,7 +311,7 @@ def test_single_node_runs() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph.run(TaskExecutor())
-    assert a.status == TaskStatus.DONE
+    assert a.status == TaskStatus.SUCCEEDED
     assert a.result is not None
     assert a.result.output.strip() == "hello"
 
@@ -303,7 +328,7 @@ def test_linear_chain_runs_in_order() -> None:
     graph.run(TaskExecutor())
     assert graph.ok
     for task in (a, b, c):
-        assert task.status == TaskStatus.DONE
+        assert task.status == TaskStatus.SUCCEEDED
 
 
 def test_diamond_runs_with_parallelism() -> None:
@@ -329,7 +354,7 @@ def test_diamond_runs_with_parallelism() -> None:
 
 
 def test_graph_records_executor_errors() -> None:
-    """Executor setup errors are exposed even when task state stays pending."""
+    """Pre-start handler errors terminalize the task as FAILED with the error."""
     a = _bash("A", "echo a")
     graph = TaskGraph()
     graph[a] = []
@@ -339,14 +364,16 @@ def test_graph_records_executor_errors() -> None:
     assert a.id in graph.errors
     assert isinstance(graph.errors[a.id], ValueError)
     assert "No handler registered" in str(graph.errors[a.id])
-    assert a.status == TaskStatus.PENDING
-    assert graph.failed == []
+    assert a.status == TaskStatus.FAILED
+    assert a.result is not None
+    assert a.result.termination_reason == "handler"
+    assert graph.failed == [a]
     assert graph.blocked == []
     assert not graph.ok
 
 
 def test_executor_error_blocks_descendants() -> None:
-    """A task that cannot execute blocks downstream tasks and records its error."""
+    """Pre-start failure terminalizes parent FAILED and blocks descendants on it."""
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
     graph = TaskGraph()
@@ -356,8 +383,14 @@ def test_executor_error_blocks_descendants() -> None:
     graph.run(TaskExecutor.empty())
 
     assert a.id in graph.errors
+    assert a.status == TaskStatus.FAILED
+    assert graph.failed == [a]
     assert graph.blocked == [b]
-    assert b.status == TaskStatus.PENDING
+    assert b.status == TaskStatus.BLOCKED
+    assert b.blocked_by == a.id
+    # Descendant blocks on a FAILED parent, not a still-PENDING one.
+    assert b.blocked_by is not None
+    assert graph._tasks[b.blocked_by].status == TaskStatus.FAILED
     assert not graph.ok
 
 
@@ -374,8 +407,10 @@ def test_failure_blocks_descendants() -> None:
     assert a.status == TaskStatus.FAILED
     assert graph.failed == [a]
     assert {t.id for t in graph.blocked} == {b.id, c.id}
-    assert b.status == TaskStatus.PENDING
-    assert c.status == TaskStatus.PENDING
+    assert b.status == TaskStatus.BLOCKED
+    assert c.status == TaskStatus.BLOCKED
+    assert b.blocked_by == a.id
+    assert c.blocked_by == b.id
 
 
 def test_failure_does_not_affect_independent_branch() -> None:
@@ -440,7 +475,7 @@ def test_add_finally_runs_after_failed_and_blocked_tasks() -> None:
         assert context.id == report.id
         assert set(context.upstream) == {a.id, b.id}
         assert context.upstream[a.id].status == TaskStatus.FAILED
-        assert context.upstream[b.id].status == TaskStatus.PENDING
+        assert context.upstream[b.id].status == TaskStatus.BLOCKED
         return "report"
 
     executor.register(TaskType.BASH, handler)
@@ -453,7 +488,7 @@ def test_add_finally_runs_after_failed_and_blocked_tasks() -> None:
 
     assert a.status == TaskStatus.FAILED
     assert b in graph.blocked
-    assert report.status == TaskStatus.DONE
+    assert report.status == TaskStatus.SUCCEEDED
     assert report.result is not None
     assert report.result.output == "report"
     assert not graph.ok
@@ -478,7 +513,7 @@ def test_optional_finally_failure_does_not_make_graph_not_ok() -> None:
 
     graph.run(executor)
 
-    assert a.status == TaskStatus.DONE
+    assert a.status == TaskStatus.SUCCEEDED
     assert report.status == TaskStatus.FAILED
     assert report in graph.failed
     assert report.id in graph.errors
@@ -522,7 +557,7 @@ def test_graph_tasks_carry_results_after_run() -> None:
 
     for task in graph:
         assert task.result is not None
-        assert task.result.status == TaskStatus.DONE
+        assert task.result.status == TaskStatus.SUCCEEDED
         assert task.result.output.strip() == task.title.lower()
 
 
@@ -538,7 +573,8 @@ def test_blocked_task_has_no_result_after_run() -> None:
     assert a.result is not None
     assert a.result.status == TaskStatus.FAILED
     assert b.result is None  # never executed
-    assert b.status == TaskStatus.PENDING
+    assert b.status == TaskStatus.BLOCKED
+    assert b.blocked_by == a.id
 
 
 # ---- run() returns self (chaining) -------------------------------------------
@@ -562,7 +598,7 @@ def test_run_returns_self_for_empty_graph() -> None:
 
 
 def test_succeeded_empty_before_run() -> None:
-    """Before any run, no task has DONE status, so succeeded is empty."""
+    """Before any run, no task has SUCCEEDED status, so succeeded is empty."""
     a = _bash("A", "echo a")
     graph = TaskGraph()
     graph[a] = []
@@ -593,7 +629,7 @@ def test_cancelled_lists_cancelled_tasks() -> None:
     graph.run(TaskExecutor())
 
     assert graph.cancelled == [a]
-    assert graph.blocked == [a]
+    assert graph.blocked == []
     assert not graph.ok
 
 
@@ -652,7 +688,7 @@ def test_blocked_resets_at_start_of_run() -> None:
 
 
 def test_clean_graph_can_be_run_again_without_blocking_done_dependencies() -> None:
-    """A rerun treats already-DONE tasks as satisfied, not failed futures."""
+    """A rerun treats already-SUCCEEDED tasks as satisfied, not failed futures."""
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
     graph = TaskGraph()
@@ -665,8 +701,8 @@ def test_clean_graph_can_be_run_again_without_blocking_done_dependencies() -> No
     assert graph.ok
     assert graph.blocked == []
     assert graph.failed == []
-    assert a.status == TaskStatus.DONE
-    assert b.status == TaskStatus.DONE
+    assert a.status == TaskStatus.SUCCEEDED
+    assert b.status == TaskStatus.SUCCEEDED
 
 
 def test_done_dependency_allows_pending_descendant_to_run() -> None:
@@ -682,7 +718,7 @@ def test_done_dependency_allows_pending_descendant_to_run() -> None:
 
     assert graph.ok
     assert graph.blocked == []
-    assert b.status == TaskStatus.DONE
+    assert b.status == TaskStatus.SUCCEEDED
 
 
 def test_cancelled_root_is_blocked_instead_of_hanging() -> None:
@@ -694,12 +730,13 @@ def test_cancelled_root_is_blocked_instead_of_hanging() -> None:
 
     graph.run(TaskExecutor())
 
-    assert graph.blocked == [a]
+    assert graph.cancelled == [a]
+    assert graph.blocked == []
     assert not graph.ok
 
 
 def test_ok_true_after_clean_run() -> None:
-    """All tasks DONE, none failed, none blocked -> ok is True."""
+    """All tasks SUCCEEDED, none failed, none blocked -> ok is True."""
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
     graph = TaskGraph()
@@ -918,3 +955,167 @@ def test_add_rejects_non_bool_required() -> None:
     bad_required: Any = "no"
     with pytest.raises(TypeError, match="required must be a bool"):
         graph.add(a, finally_=True, required=bad_required)
+
+
+# ---- Step 12: carryover-BLOCKED retry ----------------------------------------
+
+
+def test_carryover_blocked_with_succeeded_parent_recovers() -> None:
+    """A BLOCKED task entering run() with all parents SUCCEEDED runs and succeeds."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+
+    # First run succeeds A but then we manually mark B as BLOCKED on a stale id
+    # to simulate carryover from a hypothetical prior failed run.
+    graph.run(TaskExecutor())
+    assert a.status == TaskStatus.SUCCEEDED
+    assert b.status == TaskStatus.SUCCEEDED
+
+    # Force B back into a carryover-BLOCKED state pointing at A.
+    b._set_blocked_by(a.id)
+    object.__setattr__(b, "_status", TaskStatus.BLOCKED)
+
+    graph.run(TaskExecutor())
+
+    assert b.status == TaskStatus.SUCCEEDED
+    assert b.blocked_by is None
+
+
+def test_carryover_blocked_with_failed_parent_stays_blocked() -> None:
+    """Carryover BLOCKED whose parent is still FAILED stays BLOCKED, no loop."""
+    a = _bash("A", "exit 1")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+
+    graph.run(TaskExecutor())
+    assert a.status == TaskStatus.FAILED
+    assert b.status == TaskStatus.BLOCKED
+    # Second run with the same broken parent: B stays BLOCKED, no infinite loop.
+    graph.run(TaskExecutor())
+    assert a.status == TaskStatus.FAILED
+    assert b.status == TaskStatus.BLOCKED
+
+
+def test_within_run_blocked_is_not_retried_same_run() -> None:
+    """A task BLOCKED during this run is terminal-for-the-run, not retried."""
+    attempts: dict[str, int] = {"B": 0}
+    a = _bash("A", "exit 1")
+    b = _bash("B", "echo b")
+    executor = TaskExecutor()
+    original = executor._handlers[TaskType.BASH]
+
+    def counting(context: Any) -> Any:
+        if context.title == "B":
+            attempts["B"] += 1
+        return original(context)
+
+    executor.register(TaskType.BASH, counting)
+
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.run(executor)
+
+    assert a.status == TaskStatus.FAILED
+    assert b.status == TaskStatus.BLOCKED
+    # B was never submitted because it became BLOCKED in this run.
+    assert attempts["B"] == 0
+
+
+def test_finally_runs_after_carryover_blocked_recovers() -> None:
+    """A finally task fires after a carryover-BLOCKED task recovers to SUCCEEDED."""
+    finally_ran: list[str] = []
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+
+    def finally_handler(context: Any) -> str:
+        finally_ran.append(context.title)
+        return "ok"
+
+    finally_task = _bash("FIN", "echo fin")
+
+    executor = TaskExecutor()
+    original = executor._handlers[TaskType.BASH]
+
+    def dispatch(context: Any) -> Any:
+        if context.title == "FIN":
+            return finally_handler(context)
+        return original(context)
+
+    executor.register(TaskType.BASH, dispatch)
+
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph.add(finally_task, after=[b], finally_=True)
+    graph.run(executor)
+
+    assert a.status == TaskStatus.SUCCEEDED
+    assert b.status == TaskStatus.SUCCEEDED
+
+    # Force B back into carryover-BLOCKED to test recovery + finally semantics.
+    b._set_blocked_by(a.id)
+    object.__setattr__(b, "_status", TaskStatus.BLOCKED)
+    object.__setattr__(finally_task, "_status", TaskStatus.PENDING)
+    finally_task._set_result(None)
+    finally_ran.clear()
+
+    graph.run(executor)
+
+    assert b.status == TaskStatus.SUCCEEDED
+    assert finally_task.status == TaskStatus.SUCCEEDED
+    assert finally_ran == ["FIN"]
+
+
+# ---- Step 14: graph autosave failure policy ---------------------------------
+
+
+def test_graph_persistence_errors_initially_empty() -> None:
+    """A fresh executor exposes an empty graph_persistence_errors list."""
+    executor = TaskExecutor()
+    assert executor.graph_persistence_errors == []
+
+
+def test_graph_save_failure_does_not_break_run_and_records_error() -> None:
+    """A failing graph save records on graph_persistence_errors and warns."""
+    import warnings
+
+    class _BrokenGraphs:
+        def save(self, graph: Any) -> None:
+            raise RuntimeError("disk full")
+
+    class _BrokenStore:
+        @property
+        def tasks(self) -> Any:
+            return None
+
+        @property
+        def graphs(self) -> Any:
+            return _BrokenGraphs()
+
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+
+    executor = TaskExecutor(store=_BrokenStore())
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        graph.run(executor)
+
+    assert a.status == TaskStatus.SUCCEEDED
+    assert executor.graph_persistence_errors
+    assert all(gid == graph.id for gid, _ in executor.graph_persistence_errors)
+    assert any("graph persistence failed" in str(w.message) for w in captured)
+
+
+def test_persist_graph_no_store_is_noop() -> None:
+    """Without a configured store, _persist_graph silently does nothing."""
+    executor = TaskExecutor()
+    graph = TaskGraph()
+    executor._persist_graph(graph)
+    assert executor.graph_persistence_errors == []

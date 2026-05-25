@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import time
+import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._events import EventBus, TaskEvent, TaskEventType
 from ._exceptions import TaskCancelled, TaskExecutionError, TaskTimeoutError
-from ._task import Task, TaskResult, TaskStatus, TaskType
+from ._task import Task, TaskResult, TaskStatus, TaskType, TerminationReason
 
 if TYPE_CHECKING:
     from ._store import Store
@@ -105,7 +106,7 @@ class TaskExecutor:
     """Dispatch tasks to registered handlers and manage task state transitions.
 
     When constructed with ``store``, the executor auto-persists each task to
-    ``store.tasks`` on every lifecycle transition (RUNNING, DONE, FAILED,
+    ``store.tasks`` on every lifecycle transition (RUNNING, SUCCEEDED, FAILED,
     CANCELLED). Persistence runs *before* the corresponding lifecycle event is
     emitted so subscribers can read a consistent store. Persistence failures
     do not propagate as task failures; instead they are recorded on
@@ -124,6 +125,7 @@ class TaskExecutor:
         self.events = EventBus()
         self.store = store
         self.persistence_errors: list[tuple[str, BaseException]] = []
+        self.graph_persistence_errors: list[tuple[str, BaseException]] = []
         if _register_defaults:
             self.register(TaskType.BASH, self._run_bash)
             self.register(TaskType.POWERSHELL, self._run_powershell)
@@ -153,6 +155,45 @@ class TaskExecutor:
         """Return whether task_id currently has a live subprocess."""
         process = self._running_processes.get(task_id)
         return process is not None and process.poll() is None
+
+    def mark_blocked(self, task: Task, parent_id: str | None) -> None:
+        """Transition ``task`` to BLOCKED, recording the parent that caused it.
+
+        Public seam used by :class:`TaskGraph` (and any custom scheduler) to
+        signal that ``task`` cannot proceed because an upstream dependency
+        failed the readiness contract (it failed, was cancelled, or is itself
+        blocked). Records ``parent_id`` on the task via
+        :meth:`Task._set_blocked_by`, drives the lifecycle transition, and
+        emits the BLOCKED event so observers and the store see the outcome.
+        """
+        previous_status = task.status
+        task._set_blocked_by(parent_id)
+        task.transition_to(TaskStatus.BLOCKED)
+        self._emit(task, TaskEventType.BLOCKED, previous_status)
+
+    def _terminalize(
+        self,
+        task: Task,
+        result: TaskResult,
+        status: TaskStatus,
+        *,
+        previous: TaskStatus,
+        event_type: TaskEventType,
+        error: str | None = None,
+    ) -> None:
+        """Drive a single terminal write: result → transition → emit.
+
+        ``result`` is always attached so race orderings still leave a
+        TaskResult in place. If ``task`` is already in ``status`` (e.g. an
+        external ``cancel()`` raced ahead mid-execute) the transition is
+        skipped because the state-machine rejects self-transitions on
+        terminal states, but the event still fires so the executor remains
+        the single source of terminal events for its own ``execute()`` call.
+        """
+        task._set_result(result)
+        if task.status != status:
+            task.transition_to(status, error=error)
+        self._emit(task, event_type, previous, error)
 
     def _emit(
         self,
@@ -199,13 +240,63 @@ class TaskExecutor:
                 )
             )
 
+    def _persist_graph(self, graph: Any) -> None:
+        """Auto-save ``graph`` to the configured store.
+
+        Failures are recorded on :attr:`graph_persistence_errors` and surfaced
+        via :func:`warnings.warn`; they never propagate to the caller. Graph
+        persistence has no event type because :class:`TaskEvent` is
+        task-centric; the list is the discovery channel.
+        """
+        if self.store is None:
+            return
+        try:
+            self.store.graphs.save(graph)
+        except BaseException as error:
+            self.graph_persistence_errors.append((graph.id, error))
+            warnings.warn(
+                f"graph persistence failed for graph {graph.id!r}: {error}",
+                stacklevel=2,
+            )
+
     def cancel(self, task: Task) -> None:
-        """Cancel a task and terminate its subprocess if one is active."""
+        """Cancel a task and terminate its subprocess if one is active.
+
+        For tasks that were not actively executing (PENDING / FAILED /
+        BLOCKED) this emits a CANCELLED event and attaches a CANCELLED
+        ``TaskResult`` so observers and the store see the outcome.
+        Cancelling a RUNNING task does **not** emit here: the active
+        ``execute()`` loop owns the terminal event for that task and
+        will emit CANCELLED when its handler unwinds via
+        :class:`TaskCancelled`. Cancelling an already-CANCELLED task is
+        a no-op so duplicate requests stay harmless.
+        """
+        previous = task.status
         task.cancel()
 
         process = self._running_processes.get(task.id)
         if process is not None and process.poll() is None:
             self._terminate_process(process)
+
+        if previous in {TaskStatus.PENDING, TaskStatus.FAILED, TaskStatus.BLOCKED}:
+            now = datetime.now()
+            result = TaskResult(
+                task_id=task.id,
+                status=TaskStatus.CANCELLED,
+                started_at=now,
+                finished_at=now,
+                duration=0.0,
+                error="cancelled",
+                termination_reason="cancelled",
+            )
+            self._terminalize(
+                task,
+                result,
+                TaskStatus.CANCELLED,
+                previous=previous,
+                event_type=TaskEventType.CANCELLED,
+                error="cancelled",
+            )
 
     def execute(
         self,
@@ -219,7 +310,7 @@ class TaskExecutor:
         the graph ledger before submitting each non-root task.
 
         Execution always moves through RUNNING first. Returning from a handler
-        means success and moves the task to DONE; raising from a handler means
+        means success and moves the task to SUCCEEDED; raising from a handler means
         failure unless cancellation happened while the handler was in flight.
         Handlers should signal cooperative cancellation by raising TaskCancelled
         rather than mutating task state directly; the executor performs the
@@ -235,7 +326,26 @@ class TaskExecutor:
 
         handler = self._handlers.get(task.type)
         if handler is None:
-            raise ValueError(f"No handler registered for task type {task.type.value!r}")
+            message = f"No handler registered for task type {task.type.value!r}"
+            finished_at = datetime.now()
+            failed_result = TaskResult(
+                task_id=task.id,
+                status=TaskStatus.FAILED,
+                started_at=finished_at,
+                finished_at=finished_at,
+                duration=0.0,
+                error=message,
+                termination_reason="handler",
+            )
+            self._terminalize(
+                task,
+                failed_result,
+                TaskStatus.FAILED,
+                previous=TaskStatus.PENDING,
+                event_type=TaskEventType.FAILED,
+                error=message,
+            )
+            raise ValueError(message)
 
         previous_status = task.status
         task.transition_to(TaskStatus.RUNNING)
@@ -243,16 +353,10 @@ class TaskExecutor:
         started_at = datetime.now()
         started_monotonic = time.monotonic()
 
-        def result_timing() -> tuple[datetime, float]:
-            """Return finish time and duration for a terminal TaskResult."""
-            return datetime.now(), time.monotonic() - started_monotonic
-
-        context = TaskContext(task, upstream=upstream)
-
-        def finalize(status: TaskStatus, **extras: Any) -> TaskResult:
-            """Build, attach, and return the terminal TaskResult for ``task``."""
+        def build_result(status: TaskStatus, **extras: Any) -> TaskResult:
+            """Build the terminal TaskResult for ``task``."""
             finished_at = datetime.now()
-            result = TaskResult(
+            return TaskResult(
                 task_id=task.id,
                 status=status,
                 started_at=started_at,
@@ -260,54 +364,86 @@ class TaskExecutor:
                 duration=time.monotonic() - started_monotonic,
                 **extras,
             )
-            task.result = result
-            return result
+
+        context = TaskContext(task, upstream=upstream)
 
         try:
             raw_result = handler(context)
             context.raise_if_cancelled()
-            finished_at, duration = result_timing()
+            finished_at = datetime.now()
+            duration = time.monotonic() - started_monotonic
             result = TaskResult.from_raw(
                 task,
                 raw_result,
-                status=TaskStatus.DONE,
+                status=TaskStatus.SUCCEEDED,
                 started_at=started_at,
                 finished_at=finished_at,
                 duration=duration,
             )
-            task.result = result
-            task.transition_to(TaskStatus.DONE)
-            self._emit(task, TaskEventType.SUCCEEDED, TaskStatus.RUNNING)
+            self._terminalize(
+                task,
+                result,
+                TaskStatus.SUCCEEDED,
+                previous=TaskStatus.RUNNING,
+                event_type=TaskEventType.SUCCEEDED,
+            )
             return result
         except TaskCancelled as e:
-            if task.status != TaskStatus.CANCELLED:
-                task.cancel()
-            finalize(TaskStatus.CANCELLED, error=str(e))
-            self._emit(task, TaskEventType.CANCELLED, TaskStatus.RUNNING, str(e))
+            cancelled_result = build_result(
+                TaskStatus.CANCELLED, error=str(e), termination_reason="cancelled"
+            )
+            self._terminalize(
+                task,
+                cancelled_result,
+                TaskStatus.CANCELLED,
+                previous=TaskStatus.RUNNING,
+                event_type=TaskEventType.CANCELLED,
+                error=str(e),
+            )
             raise
         except Exception as e:
             if task.status == TaskStatus.CANCELLED:
                 cancelled = TaskCancelled(f"Task {task.id!r} was cancelled")
-                finalize(TaskStatus.CANCELLED, error=str(e))
-                self._emit(task, TaskEventType.CANCELLED, TaskStatus.RUNNING, str(e))
+                cancelled_result = build_result(
+                    TaskStatus.CANCELLED, error=str(e), termination_reason="cancelled"
+                )
+                self._terminalize(
+                    task,
+                    cancelled_result,
+                    TaskStatus.CANCELLED,
+                    previous=TaskStatus.RUNNING,
+                    event_type=TaskEventType.CANCELLED,
+                    error=str(e),
+                )
                 raise cancelled from e
-            task.transition_to(TaskStatus.FAILED, error=str(e))
             if isinstance(e, TaskExecutionError | TaskTimeoutError):
                 completed = e.completed
                 if isinstance(e, TaskExecutionError):
-                    error = completed.stderr or str(e)
+                    err_text = completed.stderr or str(e)
+                    reason: TerminationReason = "exit_code"
                 else:
-                    error = str(e)
-                finalize(
+                    err_text = str(e)
+                    reason = "timeout"
+                failed_result = build_result(
                     TaskStatus.FAILED,
                     output=completed.stdout or "",
-                    error=error,
+                    error=err_text,
                     returncode=completed.returncode,
                     raw=completed,
+                    termination_reason=reason,
                 )
             else:
-                finalize(TaskStatus.FAILED, error=str(e))
-            self._emit(task, TaskEventType.FAILED, TaskStatus.RUNNING, str(e))
+                failed_result = build_result(
+                    TaskStatus.FAILED, error=str(e), termination_reason="handler"
+                )
+            self._terminalize(
+                task,
+                failed_result,
+                TaskStatus.FAILED,
+                previous=TaskStatus.RUNNING,
+                event_type=TaskEventType.FAILED,
+                error=str(e),
+            )
             raise
 
     def _run_command(

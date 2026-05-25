@@ -19,6 +19,7 @@ class TaskEventType(Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    BLOCKED = "blocked"
     PERSISTENCE_FAILED = "persistence_failed"
 
 

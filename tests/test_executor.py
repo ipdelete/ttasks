@@ -108,7 +108,10 @@ def test_execute_success_emits_started_and_succeeded_events() -> None:
         TaskStatus.PENDING,
         TaskStatus.RUNNING,
     ]
-    assert [event.status for event in events] == [TaskStatus.RUNNING, TaskStatus.DONE]
+    assert [event.status for event in events] == [
+        TaskStatus.RUNNING,
+        TaskStatus.SUCCEEDED,
+    ]
     assert all(event.task is task for event in events)
     assert events[1].task.result is task.result
 
@@ -210,7 +213,7 @@ def test_execute_passes_upstream_task_refs_to_handler() -> None:
     result = executor.execute(child, upstream={parent.id: parent})
 
     assert result.output == "ok"
-    assert child.status == TaskStatus.DONE
+    assert child.status == TaskStatus.SUCCEEDED
 
 
 def test_task_result_wraps_non_string_raw_values() -> None:
@@ -228,21 +231,29 @@ def test_task_result_wraps_non_string_raw_values() -> None:
     result = executor.execute(task)
 
     assert result.task_id == task.id
-    assert result.status == TaskStatus.DONE
+    assert result.status == TaskStatus.SUCCEEDED
     assert result.raw == raw
     assert result.started_at <= result.finished_at
     assert result.duration >= 0
 
 
-def test_execute_rejects_task_without_registered_handler() -> None:
-    """Tasks without handlers are rejected before they start running."""
+def test_execute_terminalizes_task_without_registered_handler() -> None:
+    """Missing handler terminalizes the task as FAILED with handler reason."""
     executor = TaskExecutor.empty()
     task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
 
     with pytest.raises(ValueError, match="No handler registered for task type 'bash'"):
         executor.execute(task)
 
-    assert task.status == TaskStatus.PENDING
+    assert task.status == TaskStatus.FAILED
+    assert task.result is not None
+    assert task.result.termination_reason == "handler"
+    assert task.result.status == TaskStatus.FAILED
+    # No STARTED event is emitted because the task never transitioned to RUNNING.
+    assert [e.type for e in events] == [TaskEventType.FAILED]
+    assert events[0].previous_status == TaskStatus.PENDING
 
 
 def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
@@ -266,7 +277,129 @@ def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
     assert task.status == TaskStatus.CANCELLED
 
 
-def test_executor_clears_previous_error_on_successful_retry() -> None:
+def test_failed_event_subscriber_sees_attached_result() -> None:
+    """Subscribers of FAILED see task.result already attached (no race)."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+
+    def handler(context: TaskContext) -> None:
+        raise RuntimeError("boom")
+
+    executor.register(TaskType.BASH, handler)
+
+    seen_results: list[TaskResult | None] = []
+
+    def on_event(event: TaskEvent) -> None:
+        if event.type == TaskEventType.FAILED:
+            seen_results.append(event.task.result)
+
+    executor.events.subscribe(on_event)
+
+    with pytest.raises(RuntimeError):
+        executor.execute(task)
+
+    assert len(seen_results) == 1
+    assert seen_results[0] is not None
+    assert seen_results[0].status == TaskStatus.FAILED
+
+
+def test_externally_cancelled_running_task_emits_one_cancelled_event() -> None:
+    """A task cancelled while RUNNING produces exactly one CANCELLED event."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    def handler(context: TaskContext) -> None:
+        # Simulate external cancellation arriving mid-handler.
+        executor.cancel(task)
+        context.raise_if_cancelled()
+
+    executor.register(TaskType.BASH, handler)
+
+    with pytest.raises(TaskCancelled):
+        executor.execute(task)
+
+    cancelled_events = [e for e in events if e.type == TaskEventType.CANCELLED]
+    assert len(cancelled_events) == 1
+    assert task.status == TaskStatus.CANCELLED
+
+
+# ---- Step 13: executor.cancel() emits + persists ----------------------------
+
+
+def test_cancel_pending_task_emits_cancelled_event() -> None:
+    """Cancelling a PENDING task emits a single CANCELLED event."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    executor.cancel(task)
+
+    cancelled = [e for e in events if e.type == TaskEventType.CANCELLED]
+    assert len(cancelled) == 1
+    assert cancelled[0].previous_status == TaskStatus.PENDING
+    assert cancelled[0].status == TaskStatus.CANCELLED
+    assert task.status == TaskStatus.CANCELLED
+
+
+def test_cancel_pending_task_attaches_result() -> None:
+    """Cancelling a PENDING task attaches a CANCELLED TaskResult."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+
+    executor.cancel(task)
+
+    assert task.result is not None
+    assert task.result.status == TaskStatus.CANCELLED
+    assert task.result.termination_reason == "cancelled"
+
+
+def test_cancel_pending_task_persists_to_store() -> None:
+    """Cancelling a PENDING task triggers a store.tasks.save call."""
+    store = Mock()
+    store.tasks = Mock()
+    executor = TaskExecutor(store=store)
+    task = Task.bash("", title="Example")
+
+    executor.cancel(task)
+
+    store.tasks.save.assert_called_once_with(task)
+
+
+def test_cancel_idempotent_does_not_double_emit() -> None:
+    """Repeated cancel() calls only emit one CANCELLED event."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    executor.cancel(task)
+    executor.cancel(task)
+
+    cancelled = [e for e in events if e.type == TaskEventType.CANCELLED]
+    assert len(cancelled) == 1
+
+
+def test_cancel_failed_task_emits_cancelled_event() -> None:
+    """A FAILED task may be cancelled and the cancel emits a CANCELLED event."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.FAILED, error="boom")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    executor.cancel(task)
+
+    cancelled = [e for e in events if e.type == TaskEventType.CANCELLED]
+    assert len(cancelled) == 1
+    assert cancelled[0].previous_status == TaskStatus.FAILED
+    assert task.status == TaskStatus.CANCELLED
+
+
+
     """A successful retry clears the stale error from a previous failure."""
     executor = TaskExecutor()
     task = Task.bash("", title="Example")
@@ -292,8 +425,8 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
 
     assert result.output == "ok"
     assert result.raw == "ok"
-    assert result.status == TaskStatus.DONE
-    assert task.status == TaskStatus.DONE
+    assert result.status == TaskStatus.SUCCEEDED
+    assert task.status == TaskStatus.SUCCEEDED
     assert task.error is None
 
 
@@ -305,12 +438,12 @@ def test_default_executor_can_execute_bash() -> None:
     result = executor.execute(task)
 
     assert result.task_id == task.id
-    assert result.status == TaskStatus.DONE
+    assert result.status == TaskStatus.SUCCEEDED
     assert result.output == "hi\n"
     assert result.error is None
     assert result.returncode == 0
     assert isinstance(result.raw, subprocess.CompletedProcess)
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
     assert not executor.is_running(task.id)
 
 
@@ -323,7 +456,7 @@ def test_bash_task_supports_shell_syntax() -> None:
 
     assert result.output == "hello\n"
     assert result.returncode == 0
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
 
 
 def test_bash_nonzero_exit_marks_task_failed() -> None:
@@ -378,7 +511,7 @@ def test_powershell_task_executes() -> None:
 
     assert "hello" in result.output
     assert result.returncode == 0
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
     assert not executor.is_running(task.id)
 
 
@@ -391,7 +524,7 @@ def test_bash_task_without_timeout_waits_for_completion() -> None:
 
     assert result.output == "done\n"
     assert result.returncode == 0
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
     assert task.timeout is None
 
 
@@ -405,6 +538,28 @@ def test_bash_task_times_out() -> None:
 
     assert task.status == TaskStatus.FAILED
     assert task.error == "Task timed out after 0.1 seconds"
+    assert not executor.is_running(task.id)
+
+
+def test_real_subprocess_timeout_kills_within_wall_budget() -> None:
+    """Real `sleep 5` with timeout=0.1 must be killed well under 2s wall time.
+
+    Pins both the termination reason and the practical guarantee that
+    timeouts SIGTERM the subprocess rather than waiting for it to exit
+    naturally. No mocks: this is the executor against a real `sleep`.
+    """
+    executor = TaskExecutor()
+    task = Task.bash("sleep 5", title="Real timeout", timeout=0.1)
+
+    start = time.monotonic()
+    with pytest.raises(TaskTimeoutError):
+        executor.execute(task)
+    elapsed = time.monotonic() - start
+
+    assert task.status == TaskStatus.FAILED
+    assert task.result is not None
+    assert task.result.termination_reason == "timeout"
+    assert elapsed < 2.0, f"timeout did not kill the subprocess (took {elapsed:.2f}s)"
     assert not executor.is_running(task.id)
 
 
@@ -686,7 +841,7 @@ def test_default_prompt_handler_uses_copilot_sdk(
     result = executor.execute(task)
 
     assert result.output == "hello back"
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
     assert recorded["prompt"] == "hello"
     assert recorded["timeout"] == 60.0
     create_session = recorded["create_session"]
@@ -790,7 +945,7 @@ def test_default_agent_handler_uses_copilot_sdk_with_tools_enabled(
     result = executor.execute(task)
 
     assert result.output == "agent done"
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
     assert recorded["prompt"] == "inspect repo"
     assert recorded["timeout"] is None
     create_session = recorded["create_session"]
@@ -894,7 +1049,7 @@ def test_successful_execute_sets_task_result() -> None:
     returned = executor.execute(task)
 
     assert task.result is returned
-    assert task.result.status == TaskStatus.DONE
+    assert task.result.status == TaskStatus.SUCCEEDED
     assert task.result.output.strip() == "hi"
     assert task.result.returncode == 0
 
@@ -970,7 +1125,7 @@ def test_retry_after_failure_replaces_task_result() -> None:
 
     assert task.result is not None
     assert task.result is not first_result
-    assert task.result.status == TaskStatus.DONE
+    assert task.result.status == TaskStatus.SUCCEEDED
     assert task.result.output.strip() == "recovered"
 
 
@@ -1027,8 +1182,8 @@ def test_executor_auto_persists_each_lifecycle_transition() -> None:
     executor.execute(task)
 
     assert TaskStatus.RUNNING in saved_statuses
-    assert TaskStatus.DONE in saved_statuses
-    assert store.tasks[task.id].status == TaskStatus.DONE
+    assert TaskStatus.SUCCEEDED in saved_statuses
+    assert store.tasks[task.id].status == TaskStatus.SUCCEEDED
 
 
 def test_executor_saves_before_emitting_lifecycle_event() -> None:
@@ -1049,7 +1204,7 @@ def test_executor_saves_before_emitting_lifecycle_event() -> None:
     executor.execute(task)
 
     assert TaskStatus.RUNNING in observed
-    assert TaskStatus.DONE in observed
+    assert TaskStatus.SUCCEEDED in observed
 
 
 def test_persistence_failure_is_recorded_and_emitted_not_raised() -> None:
@@ -1075,8 +1230,8 @@ def test_persistence_failure_is_recorded_and_emitted_not_raised() -> None:
     task = _bash()
     result = executor.execute(task)
 
-    assert result.status == TaskStatus.DONE
-    assert task.status == TaskStatus.DONE
+    assert result.status == TaskStatus.SUCCEEDED
+    assert task.status == TaskStatus.SUCCEEDED
     # Persistence errors did not poison execution but were recorded.
     assert executor.persistence_errors
     assert all(tid == task.id for tid, _ in executor.persistence_errors)
@@ -1122,3 +1277,73 @@ def test_is_registered_rejects_non_task_type() -> None:
 
     with pytest.raises(TypeError, match="task_type must be a TaskType"):
         executor.is_registered(bogus)
+
+
+class TestTerminationReason:
+    """TaskResult.termination_reason distinguishes the cause of every terminal."""
+
+    def test_successful_task_has_no_termination_reason(self) -> None:
+        task = _bash("ok", "echo ok")
+        TaskExecutor().execute(task)
+        assert task.result is not None
+        assert task.result.termination_reason is None
+
+    def test_exit_code_failure_records_exit_code(self) -> None:
+        task = _bash("bad", "exit 1")
+        with pytest.raises(TaskExecutionError):
+            TaskExecutor().execute(task)
+        assert task.result is not None
+        assert task.result.termination_reason == "exit_code"
+
+    def test_timeout_failure_records_timeout(self) -> None:
+        task = _bash("slow", "sleep 5")
+        task.timeout = 0.1
+        with pytest.raises(TaskTimeoutError):
+            TaskExecutor().execute(task)
+        assert task.result is not None
+        assert task.result.termination_reason == "timeout"
+
+    def test_cancelled_task_records_cancelled(self) -> None:
+        task = _bash("cancelled", "echo c")
+
+        def handler(_ctx: TaskContext) -> str:
+            raise TaskCancelled("user")
+
+        executor = TaskExecutor.empty()
+        executor.register(TaskType.BASH, handler)
+        with pytest.raises(TaskCancelled):
+            executor.execute(task)
+        assert task.result is not None
+        assert task.result.termination_reason == "cancelled"
+
+    def test_handler_exception_records_handler(self) -> None:
+        task = _bash("boom", "echo boom")
+
+        def handler(_ctx: TaskContext) -> str:
+            raise RuntimeError("kaboom")
+
+        executor = TaskExecutor.empty()
+        executor.register(TaskType.BASH, handler)
+        with pytest.raises(RuntimeError):
+            executor.execute(task)
+        assert task.result is not None
+        assert task.result.termination_reason == "handler"
+
+
+# ---- Step 15: public mark_blocked seam --------------------------------------
+
+
+def test_mark_blocked_transitions_and_emits_blocked_event() -> None:
+    """executor.mark_blocked(task, parent_id) is the public scheduler seam."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    executor.mark_blocked(task, "parent-id-123")
+
+    assert task.status == TaskStatus.BLOCKED
+    assert task.blocked_by == "parent-id-123"
+    blocked = [e for e in events if e.type == TaskEventType.BLOCKED]
+    assert len(blocked) == 1
+    assert blocked[0].previous_status == TaskStatus.PENDING

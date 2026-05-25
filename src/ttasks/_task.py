@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 
 class TaskStatus(Enum):
@@ -15,9 +15,10 @@ class TaskStatus(Enum):
 
     PENDING = "pending"
     RUNNING = "running"
-    DONE = "done"
+    SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    BLOCKED = "blocked"
 
 
 class TaskType(Enum):
@@ -32,21 +33,27 @@ class TaskType(Enum):
 # Centralized state-machine definition. All task status changes should flow
 # through Task.transition_to() so these rules are enforced consistently.
 _ALLOWED_TRANSITIONS = {
-    TaskStatus.PENDING: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-    TaskStatus.RUNNING: {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED},
+    TaskStatus.PENDING: {
+        TaskStatus.RUNNING,
+        TaskStatus.CANCELLED,
+        TaskStatus.BLOCKED,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.RUNNING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED},
     TaskStatus.FAILED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-    TaskStatus.DONE: set(),
+    TaskStatus.BLOCKED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
+    TaskStatus.SUCCEEDED: set(),
     TaskStatus.CANCELLED: set(),
 }
 
 
-@dataclass
+@dataclass(eq=False)
 class Task:
     """A unit of work tracked by the ledger and executed by TaskExecutor.
 
     status is intentionally exposed as a read-only property. Use transition_to()
     or cancel() to mutate it so invalid state transitions cannot be bypassed.
-    Once a task reaches DONE, normal public attribute assignment is rejected so
+    Once a task reaches SUCCEEDED, normal public attribute assignment is rejected so
     completed upstream tasks can be safely shared by reference.
 
     timeout=None is intentional and means no automatic timeout is applied;
@@ -63,17 +70,46 @@ class Task:
     created_at: datetime = field(default_factory=datetime.now)
     _status: TaskStatus = field(default=TaskStatus.PENDING, init=False, repr=False)
     # The most recent TaskResult attached to this task, set by TaskExecutor on
-    # every terminal path (DONE, FAILED, CANCELLED). None until first run.
-    result: TaskResult | None = field(default=None, init=False, repr=False)
+    # every non-BLOCKED terminal path (SUCCEEDED, FAILED, CANCELLED). None until
+    # first run. BLOCKED tasks leave this as None — no handler ran.
+    _result: TaskResult | None = field(default=None, init=False, repr=False)
+    # The id of the direct upstream parent whose state (FAILED/CANCELLED/
+    # BLOCKED) caused this task to be marked BLOCKED. None unless blocked.
+    _blocked_by: str | None = field(default=None, init=False, repr=False)
 
     def __setattr__(self, name: str, value: object) -> None:
-        """Reject normal public mutation after the task reaches DONE."""
+        """Enforce id immutability and the private-setter discipline.
+
+        ``_id`` is immutable once set so the identity used by
+        ``__hash__`` / ``__eq__`` is stable. ``result`` and
+        ``blocked_by`` are read-only properties backed by private
+        fields — callers must use the executor-internal
+        ``_set_result`` / ``_set_blocked_by`` helpers. SUCCEEDED tasks
+        reject all remaining public writes so completed upstream tasks
+        can be safely shared by reference.
+        """
+        if name == "_id" and "_id" in self.__dict__:
+            raise AttributeError("Task._id is immutable")
+        if name in {"result", "blocked_by"}:
+            raise AttributeError(
+                f"Task.{name} is read-only; use _set_{name}() to mutate"
+            )
         if (
             not name.startswith("_")
-            and getattr(self, "_status", None) == TaskStatus.DONE
+            and getattr(self, "_status", None) == TaskStatus.SUCCEEDED
         ):
-            raise AttributeError("DONE tasks are immutable")
+            raise AttributeError("SUCCEEDED tasks are immutable")
         super().__setattr__(name, value)
+
+    def __eq__(self, other: object) -> bool:
+        """Tasks are equal iff they share an id (identity-by-id)."""
+        if not isinstance(other, Task):
+            return NotImplemented
+        return self._id == other._id
+
+    def __hash__(self) -> int:
+        """Hash by id so tasks work as set / dict keys."""
+        return hash(self._id)
 
     def __post_init__(self) -> None:
         """Validate task configuration after dataclass initialization."""
@@ -103,9 +139,9 @@ class Task:
         return self._status == TaskStatus.RUNNING
 
     @property
-    def is_done(self) -> bool:
+    def is_succeeded(self) -> bool:
         """Return whether the task has completed successfully."""
-        return self._status == TaskStatus.DONE
+        return self._status == TaskStatus.SUCCEEDED
 
     @property
     def is_failed(self) -> bool:
@@ -119,12 +155,39 @@ class Task:
 
     @property
     def is_terminal(self) -> bool:
-        """Return whether the task is in a terminal state (DONE/FAILED/CANCELLED)."""
+        """Return whether the task is in a terminal state.
+
+        Terminal states: SUCCEEDED, FAILED, CANCELLED, BLOCKED.
+        """
         return self._status in {
-            TaskStatus.DONE,
+            TaskStatus.SUCCEEDED,
             TaskStatus.FAILED,
             TaskStatus.CANCELLED,
+            TaskStatus.BLOCKED,
         }
+
+    @property
+    def is_blocked(self) -> bool:
+        """Return whether the task is in the BLOCKED state."""
+        return self._status == TaskStatus.BLOCKED
+
+    @property
+    def result(self) -> TaskResult | None:
+        """Return the latest run's TaskResult, if any."""
+        return self._result
+
+    def _set_result(self, result: TaskResult | None) -> None:
+        """Attach ``result`` (executor-internal seam)."""
+        object.__setattr__(self, "_result", result)
+
+    @property
+    def blocked_by(self) -> str | None:
+        """ID of the direct upstream parent that triggered the block, if any."""
+        return self._blocked_by
+
+    def _set_blocked_by(self, parent_id: str | None) -> None:
+        """Attach the blocking parent id (executor-internal seam)."""
+        object.__setattr__(self, "_blocked_by", parent_id)
 
     def can_transition_to(self, status: TaskStatus) -> bool:
         """Return whether the task may move from its current state to status."""
@@ -136,7 +199,8 @@ class Task:
         """Move the task to a new state if the state-machine allows it.
 
         error is stored for failed transitions and cleared by successful ones
-        because the default value is None.
+        because the default value is None. Entering RUNNING also clears any
+        prior run's ``result`` and ``blocked_by`` so a retry starts clean.
         """
         if not isinstance(status, TaskStatus):
             raise TypeError("status must be a TaskStatus")
@@ -149,6 +213,9 @@ class Task:
 
         self.error = error
         self._status = status
+        if status == TaskStatus.RUNNING:
+            object.__setattr__(self, "_result", None)
+            object.__setattr__(self, "_blocked_by", None)
 
     def cancel(self) -> None:
         """Cancel the task without discarding any existing error detail.
@@ -245,6 +312,9 @@ class Task:
         )
 
 
+TerminationReason = Literal["exit_code", "timeout", "cancelled", "handler"]
+
+
 @dataclass(frozen=True)
 class TaskResult:
     """Normalized record of a single task execution.
@@ -252,6 +322,13 @@ class TaskResult:
     Attached to Task.result by TaskExecutor on every terminal path so the
     Task itself is the canonical post-run view. Frozen so a completed run
     record cannot be mutated after the fact.
+
+    ``termination_reason`` distinguishes the cause of every terminal
+    transition: ``None`` means SUCCEEDED; ``"exit_code"`` means a
+    subprocess exited non-zero; ``"timeout"`` means the wall-clock budget
+    was exceeded and SIGTERM/SIGKILL fired; ``"cancelled"`` means a
+    cooperative cancel signal was honored; ``"handler"`` means the
+    handler raised an unstructured exception.
     """
 
     task_id: str
@@ -263,6 +340,7 @@ class TaskResult:
     error: str | None = None
     returncode: int | None = None
     raw: object | None = None
+    termination_reason: TerminationReason | None = None
 
     @classmethod
     def from_raw(

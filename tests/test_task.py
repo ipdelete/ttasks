@@ -68,7 +68,7 @@ def test_status_is_read_only() -> None:
     # Use dynamic setattr so the type checker accepts this runtime guard test.
     attr = "status"
     with pytest.raises(AttributeError):
-        setattr(task, attr, TaskStatus.DONE)
+        setattr(task, attr, TaskStatus.SUCCEEDED)
 
     assert task.status == TaskStatus.PENDING
 
@@ -98,9 +98,9 @@ def test_status_changes_through_transition_to() -> None:
     task = Task.bash("echo hi", title="Example")
 
     task.transition_to(TaskStatus.RUNNING)
-    task.transition_to(TaskStatus.DONE)
+    task.transition_to(TaskStatus.SUCCEEDED)
 
-    assert task.status == TaskStatus.DONE
+    assert task.status == TaskStatus.SUCCEEDED
     assert task.error is None
 
 
@@ -144,25 +144,15 @@ def test_cancel_preserves_previous_error() -> None:
         ("payload", "echo changed"),
         ("timeout", 1.0),
         ("error", "changed"),
-        (
-            "result",
-            TaskResult(
-                task_id="replacement",
-                status=TaskStatus.DONE,
-                started_at=datetime.now(),
-                finished_at=datetime.now(),
-                duration=0.0,
-            ),
-        ),
     ],
 )
 def test_done_tasks_reject_public_field_mutation(field: str, value: object) -> None:
-    """DONE tasks are immutable to normal public attribute assignment."""
+    """SUCCEEDED tasks are immutable to normal public attribute assignment."""
     task = Task.bash("echo hi", title="Example")
     task.transition_to(TaskStatus.RUNNING)
-    task.transition_to(TaskStatus.DONE)
+    task.transition_to(TaskStatus.SUCCEEDED)
 
-    with pytest.raises(AttributeError, match="DONE tasks are immutable"):
+    with pytest.raises(AttributeError, match="SUCCEEDED tasks are immutable"):
         setattr(task, field, value)
 
 
@@ -173,7 +163,7 @@ def test_invalid_transition_preserves_error() -> None:
     task.transition_to(TaskStatus.FAILED, error="boom")
 
     with pytest.raises(ValueError):
-        task.transition_to(TaskStatus.DONE)
+        task.transition_to(TaskStatus.SUCCEEDED)
 
     assert task.status == TaskStatus.FAILED
     assert task.error == "boom"
@@ -197,11 +187,15 @@ def test_failed_tasks_remain_mutable_for_retry() -> None:
     [
         (TaskStatus.PENDING, TaskStatus.RUNNING),
         (TaskStatus.PENDING, TaskStatus.CANCELLED),
-        (TaskStatus.RUNNING, TaskStatus.DONE),
+        (TaskStatus.PENDING, TaskStatus.BLOCKED),
+        (TaskStatus.PENDING, TaskStatus.FAILED),
+        (TaskStatus.RUNNING, TaskStatus.SUCCEEDED),
         (TaskStatus.RUNNING, TaskStatus.FAILED),
         (TaskStatus.RUNNING, TaskStatus.CANCELLED),
         (TaskStatus.FAILED, TaskStatus.RUNNING),
         (TaskStatus.FAILED, TaskStatus.CANCELLED),
+        (TaskStatus.BLOCKED, TaskStatus.RUNNING),
+        (TaskStatus.BLOCKED, TaskStatus.CANCELLED),
     ],
 )
 def test_allowed_transitions(
@@ -225,11 +219,15 @@ def test_allowed_transitions(
         not in {
             (TaskStatus.PENDING, TaskStatus.RUNNING),
             (TaskStatus.PENDING, TaskStatus.CANCELLED),
-            (TaskStatus.RUNNING, TaskStatus.DONE),
+            (TaskStatus.PENDING, TaskStatus.BLOCKED),
+            (TaskStatus.PENDING, TaskStatus.FAILED),
+            (TaskStatus.RUNNING, TaskStatus.SUCCEEDED),
             (TaskStatus.RUNNING, TaskStatus.FAILED),
             (TaskStatus.RUNNING, TaskStatus.CANCELLED),
             (TaskStatus.FAILED, TaskStatus.RUNNING),
             (TaskStatus.FAILED, TaskStatus.CANCELLED),
+            (TaskStatus.BLOCKED, TaskStatus.RUNNING),
+            (TaskStatus.BLOCKED, TaskStatus.CANCELLED),
         }
     ],
 )
@@ -260,14 +258,16 @@ def task_with_status(status: TaskStatus) -> Task:
             return task
         case TaskStatus.RUNNING:
             task.transition_to(TaskStatus.RUNNING)
-        case TaskStatus.DONE:
+        case TaskStatus.SUCCEEDED:
             task.transition_to(TaskStatus.RUNNING)
-            task.transition_to(TaskStatus.DONE)
+            task.transition_to(TaskStatus.SUCCEEDED)
         case TaskStatus.FAILED:
             task.transition_to(TaskStatus.RUNNING)
             task.transition_to(TaskStatus.FAILED, error="boom")
         case TaskStatus.CANCELLED:
             task.cancel()
+        case TaskStatus.BLOCKED:
+            task.transition_to(TaskStatus.BLOCKED)
 
     return task
 
@@ -277,19 +277,19 @@ def task_with_status(status: TaskStatus) -> Task:
     [
         (TaskStatus.PENDING, "is_pending", True),
         (TaskStatus.PENDING, "is_running", False),
-        (TaskStatus.PENDING, "is_done", False),
+        (TaskStatus.PENDING, "is_succeeded", False),
         (TaskStatus.PENDING, "is_failed", False),
         (TaskStatus.PENDING, "is_cancelled", False),
         (TaskStatus.PENDING, "is_terminal", False),
         (TaskStatus.RUNNING, "is_pending", False),
         (TaskStatus.RUNNING, "is_running", True),
-        (TaskStatus.RUNNING, "is_done", False),
+        (TaskStatus.RUNNING, "is_succeeded", False),
         (TaskStatus.RUNNING, "is_terminal", False),
-        (TaskStatus.DONE, "is_done", True),
-        (TaskStatus.DONE, "is_running", False),
-        (TaskStatus.DONE, "is_terminal", True),
+        (TaskStatus.SUCCEEDED, "is_succeeded", True),
+        (TaskStatus.SUCCEEDED, "is_running", False),
+        (TaskStatus.SUCCEEDED, "is_terminal", True),
         (TaskStatus.FAILED, "is_failed", True),
-        (TaskStatus.FAILED, "is_done", False),
+        (TaskStatus.FAILED, "is_succeeded", False),
         (TaskStatus.FAILED, "is_terminal", True),
         (TaskStatus.CANCELLED, "is_cancelled", True),
         (TaskStatus.CANCELLED, "is_pending", False),
@@ -303,3 +303,149 @@ def test_status_predicates(
     task = task_with_status(status)
 
     assert getattr(task, predicate) is expected
+
+
+class TestTaskHashingAndEquality:
+    """Tasks are identity-by-id so they work as set / dict keys."""
+
+    def test_task_equality_is_by_id(self) -> None:
+        t1 = Task.bash("echo a", title="A")
+        t2 = Task(title="B", payload="echo b", type=t1.type, _id=t1.id)
+        assert t1 == t2
+
+    def test_task_hash_matches_id_hash(self) -> None:
+        t = Task.bash("echo a", title="A")
+        assert hash(t) == hash(t.id)
+
+    def test_task_set_and_dict_membership(self) -> None:
+        t1 = Task.bash("echo a", title="A")
+        t2 = Task(title="A-dup", payload="echo a", type=t1.type, _id=t1.id)
+        t3 = Task.bash("echo b", title="B")
+        assert {t1, t2, t3} == {t1, t3}
+        d = {t1: "first"}
+        assert d[t2] == "first"
+
+    def test_distinct_ids_are_not_equal(self) -> None:
+        t1 = Task.bash("echo a", title="A")
+        t2 = Task.bash("echo a", title="A")
+        assert t1 != t2
+
+    def test_task_not_equal_to_non_task(self) -> None:
+        t = Task.bash("echo a", title="A")
+        assert t != "not-a-task"
+        assert t != None  # noqa: E711
+
+    def test_id_is_immutable_after_construction(self) -> None:
+        t = Task.bash("echo a", title="A")
+        with pytest.raises(AttributeError, match="immutable"):
+            t._id = "other"
+
+    def test_same_id_different_status_still_equal(self) -> None:
+        t1 = Task.bash("echo a", title="A")
+        t2 = Task(title="A", payload="echo a", type=t1.type, _id=t1.id)
+        t2.transition_to(TaskStatus.RUNNING)
+        assert t1 == t2
+        assert hash(t1) == hash(t2)
+
+
+class TestTaskStatusSucceeded:
+    """SUCCEEDED has been renamed to SUCCEEDED."""
+
+    def test_taskstatus_succeeded_value_is_succeeded(self) -> None:
+        assert TaskStatus.SUCCEEDED.value == "succeeded"
+
+    def test_task_is_succeeded_after_success(self) -> None:
+        task = Task.bash("echo a", title="A")
+        task.transition_to(TaskStatus.RUNNING)
+        task.transition_to(TaskStatus.SUCCEEDED)
+        assert task.is_succeeded is True
+        assert task.status == TaskStatus.SUCCEEDED
+
+    def test_old_done_name_is_gone(self) -> None:
+        assert not hasattr(TaskStatus, "DONE")
+
+
+class TestBlockedStatus:
+    """BLOCKED is a terminal status that supports retry (BLOCKED→RUNNING)."""
+
+    def test_blocked_value_is_blocked(self) -> None:
+        assert TaskStatus.BLOCKED.value == "blocked"
+
+    def test_is_blocked_predicate(self) -> None:
+        task = task_with_status(TaskStatus.BLOCKED)
+        assert task.is_blocked is True
+        assert task.is_terminal is True
+
+    def test_pending_can_transition_to_blocked(self) -> None:
+        task = Task.bash("a", title="A")
+        assert task.can_transition_to(TaskStatus.BLOCKED)
+        task.transition_to(TaskStatus.BLOCKED)
+        assert task.status == TaskStatus.BLOCKED
+
+    def test_blocked_can_transition_back_to_running(self) -> None:
+        task = task_with_status(TaskStatus.BLOCKED)
+        assert task.can_transition_to(TaskStatus.RUNNING)
+        task.transition_to(TaskStatus.RUNNING)
+        assert task.status == TaskStatus.RUNNING
+
+
+class TestBlockedBy:
+    """blocked_by records the direct upstream parent that triggered the block."""
+
+    def test_blocked_by_default_none(self) -> None:
+        task = Task.bash("a", title="A")
+        assert task.blocked_by is None
+
+    def test_public_write_rejected(self) -> None:
+        task = Task.bash("a", title="A")
+        with pytest.raises(AttributeError):
+            task.blocked_by = "parent"  # ty: ignore[invalid-assignment]
+
+    def test_set_via_private_setter(self) -> None:
+        task = Task.bash("a", title="A")
+        task._set_blocked_by("parent-id")
+        assert task.blocked_by == "parent-id"
+
+    def test_result_public_write_rejected(self) -> None:
+        task = Task.bash("a", title="A")
+        with pytest.raises(AttributeError):
+            task.result = None  # ty: ignore[invalid-assignment]
+
+    def test_result_set_via_private_setter(self) -> None:
+        task = Task.bash("a", title="A")
+        r = TaskResult(
+            task_id=task.id,
+            status=TaskStatus.SUCCEEDED,
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            duration=0.01,
+        )
+        task._set_result(r)
+        assert task.result is r
+
+
+class TestRunningEntryResetsCarryover:
+    """Entering RUNNING clears any prior run's result and blocked_by."""
+
+    def test_failed_to_running_clears_result(self) -> None:
+        task = task_with_status(TaskStatus.FAILED)
+        r = TaskResult(
+            task_id=task.id,
+            status=TaskStatus.FAILED,
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            duration=0.01,
+        )
+        task._set_result(r)
+
+        task.transition_to(TaskStatus.RUNNING)
+
+        assert task.result is None
+
+    def test_blocked_to_running_clears_blocked_by(self) -> None:
+        task = task_with_status(TaskStatus.BLOCKED)
+        task._set_blocked_by("parent-id")
+
+        task.transition_to(TaskStatus.RUNNING)
+
+        assert task.blocked_by is None

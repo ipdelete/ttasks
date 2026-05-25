@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import _bash, _opaque
@@ -60,19 +62,19 @@ class TestSQLiteTaskCollection:
 
         task = _bash()
         task.transition_to(TaskStatus.RUNNING)
-        task.result = TaskResult(
+        task._set_result(TaskResult(
             task_id=task.id,
-            status=TaskStatus.DONE,
+            status=TaskStatus.SUCCEEDED,
             started_at=datetime(2024, 1, 1, 12, 0),
             finished_at=datetime(2024, 1, 1, 12, 0, 5),
             duration=5.0,
             output="ok",
             returncode=0,
-        )
-        task.transition_to(TaskStatus.DONE)
+        ))
+        task.transition_to(TaskStatus.SUCCEEDED)
         store.tasks.save(task)
         loaded = store.tasks[task.id]
-        assert loaded.status == TaskStatus.DONE
+        assert loaded.status == TaskStatus.SUCCEEDED
         assert loaded.result is not None
         assert loaded.result.output == "ok"
         assert loaded.result.returncode == 0
@@ -246,6 +248,83 @@ class TestSQLiteGraphCollection:
         assert 123 not in store.graphs
 
 
+class TestSchemaVersionEnforcement:
+    """Schema-version safety: refuse silent destructive migrations."""
+
+    def test_schema_mismatch_raises_without_opt_in(
+        self, store_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        SQLiteStore(store_path).tasks.save(_bash("doomed", "echo gone"))
+
+        monkeypatch.setattr("ttasks._sqlite._SCHEMA_VERSION", "999")
+        with pytest.raises(RuntimeError, match="schema_version"):
+            SQLiteStore(store_path)
+
+    def test_schema_mismatch_rebuilds_with_opt_in_and_warns(
+        self,
+        store_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        recwarn: pytest.WarningsRecorder,
+    ) -> None:
+        SQLiteStore(store_path).tasks.save(_bash("doomed", "echo gone"))
+
+        monkeypatch.setattr("ttasks._sqlite._SCHEMA_VERSION", "999")
+        rebuilt = SQLiteStore(store_path, allow_destructive_migration=True)
+
+        assert len(rebuilt.tasks) == 0
+        rebuilt.tasks.save(_bash("fresh", "echo new"))
+        assert len(rebuilt.tasks) == 1
+        assert any(
+            issubclass(w.category, UserWarning)
+            and "schema_version" in str(w.message)
+            for w in recwarn.list
+        )
+
+    def test_schema_match_preserves_data(self, store_path: Path) -> None:
+        task = _bash("kept", "echo keep")
+        SQLiteStore(store_path).tasks.save(task)
+        # Same version on re-open → no rebuild, prior row still there.
+        assert SQLiteStore(store_path).tasks[task.id].title == "kept"
+
+    def test_schema_version_row_updated_after_rebuild(
+        self, store_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sqlite3
+
+        SQLiteStore(store_path)
+        monkeypatch.setattr("ttasks._sqlite._SCHEMA_VERSION", "999")
+        SQLiteStore(store_path, allow_destructive_migration=True)
+        with sqlite3.connect(store_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()
+        assert row[0] == "999"
+
+    def test_populated_database_without_metadata_row_raises(
+        self, store_path: Path
+    ) -> None:
+        """A non-empty DB missing the schema_version row is treated as foreign."""
+        import sqlite3
+
+        with sqlite3.connect(store_path) as conn:
+            conn.execute(
+                "CREATE TABLE tasks (id TEXT PRIMARY KEY, payload TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO tasks (id, payload) VALUES ('x', 'y')"
+            )
+
+        with pytest.raises(RuntimeError, match="schema_version"):
+            SQLiteStore(store_path)
+
+    def test_fresh_empty_database_is_accepted(self, store_path: Path) -> None:
+        """Brand-new path opens cleanly and stamps the current version."""
+        store = SQLiteStore(store_path)
+        assert len(store.tasks) == 0
+        store.tasks.save(_bash("ok", "echo ok"))
+        assert len(store.tasks) == 1
+
+
 def test_sqlite_store_repr_includes_database_path(store_path: Path) -> None:
     """repr is a quick way to surface the underlying database file."""
     store = SQLiteStore(store_path)
@@ -276,9 +355,118 @@ class TestSQLiteStoreUnderTaskGraphRun:
         assert graph.ok
         assert not executor.persistence_errors
         # Every task's terminal status is queryable from the store.
-        assert store.tasks[root.id].status == TaskStatus.DONE
+        assert store.tasks[root.id].status == TaskStatus.SUCCEEDED
         for leaf in leaves:
             loaded = store.tasks[leaf.id]
-            assert loaded.status == TaskStatus.DONE
+            assert loaded.status == TaskStatus.SUCCEEDED
             assert loaded.result is not None
             assert loaded.result.output.strip() == leaf.title
+
+
+class TestGraphRunAutoSave:
+    """TaskGraph.run(executor) auto-saves the graph when executor has a store."""
+
+    def test_run_persists_graph_at_start_before_handlers_execute(
+        self, store: SQLiteStore
+    ) -> None:
+        seen_at_handler: list[bool] = []
+
+        def handler(_ctx: object) -> str:
+            seen_at_handler.append(graph.id in store.graphs)
+            return "ok"
+
+        executor = TaskExecutor.empty(store=store)
+        executor.register(TaskType.BASH, handler)
+        task = _bash("probe", "echo probe")
+        graph = TaskGraph(title="autosave-start")
+        graph[task] = []
+
+        assert graph.id not in store.graphs
+        graph.run(executor)
+        assert seen_at_handler == [True]
+        assert graph.id in store.graphs
+
+    def test_run_persists_graph_at_end_reflects_final_statuses(
+        self, store: SQLiteStore
+    ) -> None:
+        a = _bash("a", "echo a")
+        b = _bash("b", "echo b")
+        graph = TaskGraph(title="autosave-end")
+        graph[a] = []
+        graph[b] = [a]
+
+        graph.run(TaskExecutor(store=store))
+        reloaded = store.graphs[graph.id]
+        assert {t.status for t in reloaded} == {TaskStatus.SUCCEEDED}
+
+    def test_run_without_store_is_noop_for_persistence(self) -> None:
+        # No store, no crash. Smoke check.
+        task = _bash("nostore", "echo x")
+        graph = TaskGraph(title="nostore")
+        graph[task] = []
+        graph.run(TaskExecutor())
+        assert task.status == TaskStatus.SUCCEEDED
+
+    def test_explicit_save_then_run_is_idempotent(
+        self, store: SQLiteStore
+    ) -> None:
+        task = _bash("idempotent", "echo idem")
+        graph = TaskGraph(title="idem")
+        graph[task] = []
+        store.graphs.save(graph)
+        graph.run(TaskExecutor(store=store))
+        # Still exactly one graph row, still all tasks SUCCEEDED.
+        assert len(store.graphs) == 1
+        assert store.graphs[graph.id].title == "idem"
+        assert store.tasks[task.id].status == TaskStatus.SUCCEEDED
+
+    def test_run_does_not_persist_invalid_graph(
+        self, store: SQLiteStore
+    ) -> None:
+        # Build a graph that fails validation: task with dep on unknown id.
+        task = _bash("orphan", "echo o")
+        graph = TaskGraph(title="invalid")
+        # Insert raw to bypass __setitem__ checks, simulating a corrupted graph.
+        # Simpler: introduce a cycle via __setitem__.
+        a = _bash("a", "echo a")
+        b = _bash("b", "echo b")
+        graph[a] = [b]
+        graph[b] = [a]
+
+        with pytest.raises(ValueError, match="cycle"):
+            graph.run(TaskExecutor(store=store))
+        assert graph.id not in store.graphs
+        # The probe task we set up doesn't end up in the store either.
+        assert task.id not in store.tasks
+
+
+class TestTerminationReasonRoundtrip:
+    """termination_reason persists through SQLite."""
+
+    @pytest.mark.parametrize(
+        "reason",
+        [None, "exit_code", "timeout", "cancelled", "handler"],
+    )
+    def test_termination_reason_roundtrips(
+        self, store: SQLiteStore, reason: Any
+    ) -> None:
+        task = _bash("t", "echo t")
+        if reason is not None:
+            task.transition_to(TaskStatus.RUNNING)
+            task.transition_to(TaskStatus.FAILED, error="x")
+        else:
+            task.transition_to(TaskStatus.RUNNING)
+            task.transition_to(TaskStatus.SUCCEEDED)
+        result = TaskResult(
+            task_id=task.id,
+            status=TaskStatus.SUCCEEDED if reason is None else TaskStatus.FAILED,
+            started_at=datetime.now(),
+            finished_at=datetime.now(),
+            duration=0.01,
+            termination_reason=reason,
+        )
+        task._set_result(result)
+        store.tasks.save(task)
+        loaded = store.tasks[task.id]
+        assert loaded.result is not None
+        assert loaded.result.termination_reason == reason

@@ -43,11 +43,12 @@ def _collect_events(executor: TaskExecutor) -> list[TaskEvent]:
 
 
 def _terminals_by_task(events: Iterable[TaskEvent]) -> dict[str, TaskEvent]:
-    """Map task_id -> the single terminal event (SUCCEEDED/FAILED/CANCELLED)."""
+    """Map task_id -> the single terminal event (SUCCEEDED/FAILED/CANCELLED/BLOCKED)."""
     terminal_types = {
         TaskEventType.SUCCEEDED,
         TaskEventType.FAILED,
         TaskEventType.CANCELLED,
+        TaskEventType.BLOCKED,
     }
     out: dict[str, TaskEvent] = {}
     for ev in events:
@@ -105,7 +106,7 @@ def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
     # Outcome.
     assert graph.ok
     for task in [setup, write_a, write_b, write_c, concat, validate, cleanup]:
-        assert task.status == TaskStatus.DONE, f"{task.title} not DONE"
+        assert task.status == TaskStatus.SUCCEEDED, f"{task.title} not SUCCEEDED"
     assert out.read_text() == "a\nb\nc\n"
     assert not work.exists(), "finally cleanup did not remove workdir"
 
@@ -125,7 +126,7 @@ def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
         assert persisted.status == task.status
         assert persisted.title == task.title
     persisted_graph = reopened.graphs[graph.id]
-    assert {t.id for t in persisted_graph} == {t.id for t in graph}
+    assert set(persisted_graph) == set(graph)
 
 
 # --- Test 2: failure cascade with optional finally --------------------------
@@ -157,12 +158,12 @@ def test_failure_cascade_with_optional_finally(tmp_path: Path) -> None:
 
     # Per-task status.
     expected = {
-        setup.id: TaskStatus.DONE,
-        step_ok.id: TaskStatus.DONE,
-        step_ok2.id: TaskStatus.DONE,
+        setup.id: TaskStatus.SUCCEEDED,
+        step_ok.id: TaskStatus.SUCCEEDED,
+        step_ok2.id: TaskStatus.SUCCEEDED,
         step_fails.id: TaskStatus.FAILED,
-        publish.id: TaskStatus.PENDING,  # blocked never enters running/done
-        cleanup.id: TaskStatus.DONE,
+        publish.id: TaskStatus.BLOCKED,
+        cleanup.id: TaskStatus.SUCCEEDED,
     }
     actual = {t.id: t.status for t in graph}
     assert actual == expected
@@ -170,6 +171,7 @@ def test_failure_cascade_with_optional_finally(tmp_path: Path) -> None:
     assert not graph.ok
     assert graph.failed == [step_fails]
     assert graph.blocked == [publish]
+    assert publish.blocked_by == step_fails.id
     assert sentinel.exists(), "optional finally cleanup did not run"
 
     # Exactly one FAILED event, for step_fails.
@@ -258,22 +260,22 @@ def _build_transition_zoo() -> tuple[TaskGraph, dict[str, Task]]:
 
 
 EXPECTED_ZOO_STATUS: dict[str, TaskStatus] = {
-    "R1": TaskStatus.DONE, "R2": TaskStatus.DONE, "R3": TaskStatus.DONE,
-    "A": TaskStatus.DONE, "B": TaskStatus.FAILED, "C": TaskStatus.DONE,
-    "D": TaskStatus.DONE, "E": TaskStatus.DONE,
-    "H": TaskStatus.DONE, "I": TaskStatus.DONE,
-    "J": TaskStatus.PENDING,    # blocked by B
-    "K": TaskStatus.DONE,
+    "R1": TaskStatus.SUCCEEDED, "R2": TaskStatus.SUCCEEDED, "R3": TaskStatus.SUCCEEDED,
+    "A": TaskStatus.SUCCEEDED, "B": TaskStatus.FAILED, "C": TaskStatus.SUCCEEDED,
+    "D": TaskStatus.SUCCEEDED, "E": TaskStatus.SUCCEEDED,
+    "H": TaskStatus.SUCCEEDED, "I": TaskStatus.SUCCEEDED,
+    "J": TaskStatus.BLOCKED,    # blocked by B
+    "K": TaskStatus.SUCCEEDED,
     "L": TaskStatus.FAILED,     # timeout
-    "M": TaskStatus.DONE,
-    "P": TaskStatus.DONE,
-    "Q": TaskStatus.PENDING,    # blocked transitively via J
-    "S": TaskStatus.PENDING,    # blocked transitively via L
-    "F1": TaskStatus.DONE,
+    "M": TaskStatus.SUCCEEDED,
+    "P": TaskStatus.SUCCEEDED,
+    "Q": TaskStatus.BLOCKED,    # blocked transitively via J
+    "S": TaskStatus.BLOCKED,    # blocked transitively via L
+    "F1": TaskStatus.SUCCEEDED,
     "F2": TaskStatus.FAILED,    # optional finally that itself fails
-    "F3": TaskStatus.DONE,      # chained finally-on-finally
-    "F4": TaskStatus.DONE,      # finally with no upstream
-    "F5": TaskStatus.DONE,      # finally on blocked + failed deps still runs
+    "F3": TaskStatus.SUCCEEDED,      # chained finally-on-finally
+    "F4": TaskStatus.SUCCEEDED,      # finally with no upstream
+    "F5": TaskStatus.SUCCEEDED,      # finally on blocked + failed deps still runs
 }
 
 EXPECTED_BLOCKED_LABELS = {"J", "Q", "S"}
@@ -297,7 +299,7 @@ def test_transition_zoo() -> None:
     # 3. Exact node identity for the three buckets (compare by id).
     expected_done_ids = {
         t[label].id for label, st in EXPECTED_ZOO_STATUS.items()
-        if st is TaskStatus.DONE
+        if st is TaskStatus.SUCCEEDED
     }
     expected_failed_ids = {
         t[label].id for label, st in EXPECTED_ZOO_STATUS.items()
@@ -314,18 +316,23 @@ def test_transition_zoo() -> None:
         assert t[label].id not in started_ids
         assert t[label].result is None
 
-    # 5. Every non-blocked task got exactly one terminal event.
+    # 5. Every task got exactly one terminal event (including BLOCKED).
     terminals = _terminals_by_task(events)
-    non_blocked_ids = {
-        t[label].id for label, st in EXPECTED_ZOO_STATUS.items()
-        if st is not TaskStatus.PENDING
-    }
-    assert set(terminals) == non_blocked_ids
+    assert set(terminals) == {t[label].id for label in EXPECTED_ZOO_STATUS}
 
-    # 6. Event ordering: for every dependency edge u → v where both terminated,
-    #    u's terminal event precedes v's terminal event.
+    # 5b. BLOCKED tasks record the upstream parent that blocked them.
+    assert t["J"].blocked_by == t["B"].id
+    assert t["Q"].blocked_by == t["J"].id
+    assert t["S"].blocked_by == t["L"].id
+
+    # 6. Event ordering: for every dependency edge u → v where both terminated
+    #    and v is not BLOCKED, u's terminal event precedes v's terminal event.
+    #    BLOCKED is emitted as soon as one parent fails, so the other parents
+    #    of a blocked node may legitimately terminate after it.
     for v in graph:
         if v.id not in terminals:
+            continue
+        if v.status == TaskStatus.BLOCKED:
             continue
         for u in graph.dependencies(v):
             if u.id not in terminals:
@@ -333,6 +340,15 @@ def test_transition_zoo() -> None:
             assert terminals[u.id].timestamp <= terminals[v.id].timestamp, (
                 f"terminal ordering violated: {u.title} after {v.title}"
             )
+
+    # 7. termination_reason distinguishes B (non-zero exit) from L (timeout).
+    assert t["B"].result is not None
+    assert t["B"].result.termination_reason == "exit_code"
+    assert t["L"].result is not None
+    assert t["L"].result.termination_reason == "timeout"
+    # SUCCEEDED tasks carry no termination_reason.
+    assert t["A"].result is not None
+    assert t["A"].result.termination_reason is None
 
 
 def test_transition_zoo_persists(tmp_path: Path) -> None:
@@ -388,12 +404,12 @@ def test_mixed_type_copilot_workflow(tmp_path: Path) -> None:
         timeout=60,
     )
     agent_act = Task.agent(
-        f"Append the single word DONE to the file at {artifact}.",
+        f"Append the single word SUCCEEDED to the file at {artifact}.",
         title="agent_act",
         timeout=120,
     )
     bash_verify = Task.bash(
-        f"grep -q DONE {artifact}", title="bash_verify",
+        f"grep -q SUCCEEDED {artifact}", title="bash_verify",
     )
 
     store = SQLiteStore(db)
@@ -415,7 +431,7 @@ def test_mixed_type_copilot_workflow(tmp_path: Path) -> None:
         f"{ {t.title: t.status.value for t in graph} }"
     )
     for task in graph:
-        assert task.status == TaskStatus.DONE
+        assert task.status == TaskStatus.SUCCEEDED
     assert prompt_summarize.result is not None
     assert "mixed prompt ok" in (prompt_summarize.result.output or "")
 
@@ -423,7 +439,7 @@ def test_mixed_type_copilot_workflow(tmp_path: Path) -> None:
     reopened = SQLiteStore(db)
     for task in graph:
         persisted = reopened.tasks[task.id]
-        assert persisted.status == TaskStatus.DONE
+        assert persisted.status == TaskStatus.SUCCEEDED
         assert persisted.type == task.type
         if task.result is not None:
             assert persisted.result is not None

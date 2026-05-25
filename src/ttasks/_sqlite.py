@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import sqlite3
+import warnings
 from collections.abc import Iterator, MutableMapping
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, cast
 
 from ._graph import TaskGraph
-from ._task import Task, TaskResult, TaskStatus, TaskType
+from ._task import Task, TaskResult, TaskStatus, TaskType, TerminationReason
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "4"
 _CONNECT_TIMEOUT_SECONDS = 30.0
+# Tables known to the current schema. Used to detect "populated by something
+# we recognize" and to drive the destructive rebuild path.
+_KNOWN_TABLES = (
+    "graph_dependencies",
+    "graph_tasks",
+    "graphs",
+    "task_results",
+    "tasks",
+    "metadata",
+)
 
 
 class _Connection:
@@ -24,12 +35,18 @@ class _Connection:
     a generous busy timeout absorbs short write contention.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        allow_destructive_migration: bool = False,
+    ) -> None:
         """Open or create the SQLite database at ``path`` and init the schema."""
         self.path = Path(path)
         if self.path.parent != Path(""):
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._schema_lock = RLock()
+        self._allow_destructive = allow_destructive_migration
         self._init_schema()
 
     def connect(self) -> sqlite3.Connection:
@@ -44,6 +61,7 @@ class _Connection:
         with self._schema_lock, self.connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = NORMAL")
+            self._enforce_schema_version(connection, self._allow_destructive)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS metadata (
@@ -63,6 +81,7 @@ class _Connection:
                     status TEXT NOT NULL,
                     error TEXT,
                     timeout REAL,
+                    blocked_by TEXT,
                     created_at TEXT NOT NULL
                 )
                 """
@@ -78,6 +97,7 @@ class _Connection:
                     output TEXT NOT NULL,
                     error TEXT,
                     returncode INTEGER,
+                    termination_reason TEXT,
                     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
                 )
                 """
@@ -126,6 +146,64 @@ class _Connection:
                 """,
                 (_SCHEMA_VERSION,),
             )
+
+    @staticmethod
+    def _enforce_schema_version(
+        connection: sqlite3.Connection, allow_destructive: bool
+    ) -> None:
+        """Validate the persisted schema version; never silently drop data.
+
+        Behaviour:
+        - Truly empty database (no recognised tables): accept and let
+          ``_init_schema`` stamp the current version.
+        - Recognised tables present with a matching ``schema_version`` row:
+          accept and reuse.
+        - Recognised tables present but ``schema_version`` row missing, or
+          version mismatched, *without* ``allow_destructive=True``: raise
+          ``RuntimeError`` so callers must opt in to data loss.
+        - Mismatch *with* ``allow_destructive=True``: emit a ``UserWarning``
+          and drop every known table so ``_init_schema`` can rebuild.
+        """
+        existing_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        known_present = existing_tables & set(_KNOWN_TABLES)
+        if not known_present:
+            return
+
+        version: str | None = None
+        if "metadata" in known_present:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()
+            if row is not None:
+                version = str(row[0])
+
+        if version == _SCHEMA_VERSION:
+            return
+
+        if version is None:
+            message = (
+                "SQLite store at this path has known tables but no "
+                "schema_version row. Refusing to touch it. Pass "
+                "allow_destructive_migration=True to drop and rebuild."
+            )
+        else:
+            message = (
+                f"SQLite store schema_version {version!r} does not match "
+                f"current {_SCHEMA_VERSION!r}. Pass "
+                f"allow_destructive_migration=True to drop and rebuild."
+            )
+
+        if not allow_destructive:
+            raise RuntimeError(message)
+
+        warnings.warn(message, UserWarning, stacklevel=2)
+        for table in _KNOWN_TABLES:
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
 
 
 class SQLiteTaskCollection(MutableMapping[str, Task]):
@@ -365,10 +443,24 @@ class SQLiteGraphCollection(MutableMapping[str, TaskGraph]):
 class SQLiteStore:
     """SQLite-backed durable :class:`Store` exposing tasks and graphs."""
 
-    def __init__(self, path: str | Path) -> None:
-        """Open or create a SQLite store at ``path``."""
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        allow_destructive_migration: bool = False,
+    ) -> None:
+        """Open or create a SQLite store at ``path``.
+
+        ``allow_destructive_migration=True`` permits dropping and rebuilding
+        the database when the on-disk schema version does not match. Without
+        the flag, a mismatch (or a populated database that lacks a
+        ``schema_version`` row) raises ``RuntimeError`` so callers must
+        explicitly accept data loss.
+        """
         self.path = Path(path)
-        self._connection = _Connection(path)
+        self._connection = _Connection(
+            path, allow_destructive_migration=allow_destructive_migration
+        )
         self.tasks = SQLiteTaskCollection(self._connection)
         self.graphs = SQLiteGraphCollection(self._connection, self.tasks)
 
@@ -383,9 +475,9 @@ def _upsert_task(connection: sqlite3.Connection, task: Task) -> None:
         """
         INSERT INTO tasks (
             id, title, description, payload, type, status,
-            error, timeout, created_at
+            error, timeout, blocked_by, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             description = excluded.description,
@@ -394,6 +486,7 @@ def _upsert_task(connection: sqlite3.Connection, task: Task) -> None:
             status = excluded.status,
             error = excluded.error,
             timeout = excluded.timeout,
+            blocked_by = excluded.blocked_by,
             created_at = excluded.created_at
         """,
         _task_values(task),
@@ -407,9 +500,9 @@ def _upsert_task(connection: sqlite3.Connection, task: Task) -> None:
             """
             INSERT INTO task_results (
                 task_id, status, started_at, finished_at, duration,
-                output, error, returncode
+                output, error, returncode, termination_reason
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 status = excluded.status,
                 started_at = excluded.started_at,
@@ -417,7 +510,8 @@ def _upsert_task(connection: sqlite3.Connection, task: Task) -> None:
                 duration = excluded.duration,
                 output = excluded.output,
                 error = excluded.error,
-                returncode = excluded.returncode
+                returncode = excluded.returncode,
+                termination_reason = excluded.termination_reason
             """,
             _result_values(task.result),
         )
@@ -434,6 +528,7 @@ def _task_values(task: Task) -> tuple[Any, ...]:
         task.status.value,
         task.error,
         task.timeout,
+        task.blocked_by,
         task.created_at.isoformat(),
     )
 
@@ -449,6 +544,7 @@ def _result_values(result: TaskResult) -> tuple[Any, ...]:
         result.output,
         result.error,
         result.returncode,
+        result.termination_reason,
     )
 
 
@@ -465,7 +561,11 @@ def _task_from_row(row: sqlite3.Row, result: TaskResult | None) -> Task:
         created_at=datetime.fromisoformat(str(row["created_at"])),
     )
     object.__setattr__(task, "_status", TaskStatus(str(row["status"])))
-    object.__setattr__(task, "result", result)
+    object.__setattr__(task, "_result", result)
+    blocked_by = row["blocked_by"]
+    object.__setattr__(
+        task, "_blocked_by", str(blocked_by) if blocked_by is not None else None
+    )
     return task
 
 
@@ -481,4 +581,7 @@ def _result_from_row(row: sqlite3.Row) -> TaskResult:
         error=row["error"],
         returncode=row["returncode"],
         raw=None,
+        termination_reason=cast(
+            "TerminationReason | None", row["termination_reason"]
+        ),
     )

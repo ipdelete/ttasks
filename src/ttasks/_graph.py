@@ -34,10 +34,6 @@ class TaskGraph:
         self._tasks: dict[str, Task] = {}
         # task_id -> list of upstream task_ids.
         self._deps: dict[str, list[str]] = {}
-        # Tasks skipped during the most recent run() because an upstream task
-        # failed/cancelled or because the task itself could not be submitted.
-        # Cleared at the start of each run().
-        self._blocked: set[str] = set()
         # Exceptions raised by submitted task futures during the most recent
         # run, keyed by task id. Cleared at the start of each run().
         self._errors: dict[str, BaseException] = {}
@@ -146,8 +142,8 @@ class TaskGraph:
 
     @property
     def succeeded(self) -> list[Task]:
-        """Tasks in this graph whose status is DONE."""
-        return [t for t in self if t.status == TaskStatus.DONE]
+        """Tasks in this graph whose status is SUCCEEDED."""
+        return [t for t in self if t.status == TaskStatus.SUCCEEDED]
 
     @property
     def failed(self) -> list[Task]:
@@ -161,14 +157,8 @@ class TaskGraph:
 
     @property
     def blocked(self) -> list[Task]:
-        """Tasks skipped during the most recent :meth:`run`.
-
-        A task is blocked when an upstream task failed/cancelled, or when the
-        task itself could not be submitted because its lifecycle state cannot
-        move to RUNNING. Distinct from "PENDING because run() was never called":
-        this list is populated only by :meth:`run` and reset on each call.
-        """
-        return [self._tasks[tid] for tid in self._blocked]
+        """Tasks in this graph whose status is BLOCKED."""
+        return [t for t in self if t.status == TaskStatus.BLOCKED]
 
     @property
     def errors(self) -> dict[str, BaseException]:
@@ -179,7 +169,7 @@ class TaskGraph:
     def ok(self) -> bool:
         """True iff every required task succeeded without run errors."""
         return all(
-            self._tasks[tid].status == TaskStatus.DONE
+            self._tasks[tid].status == TaskStatus.SUCCEEDED
             for tid in self._deps
             if tid not in self._optional
         )
@@ -202,7 +192,17 @@ class TaskGraph:
     # ---- validation ---------------------------------------------------------
 
     def _validate(self) -> None:
-        """Raise ValueError on missing deps or cycles. Called from :meth:`run`."""
+        """Raise ValueError on missing deps, cycles, or stale RUNNING state.
+
+        Called from :meth:`run`. A task already in RUNNING cannot transition
+        again and would deadlock the scheduler, so we surface it eagerly
+        rather than time out.
+        """
+        for task in self._tasks.values():
+            if task.status == TaskStatus.RUNNING:
+                raise ValueError(
+                    f"task {task.title!r} is RUNNING; reset before run()"
+                )
         for tid, ds in self._deps.items():
             for d in ds:
                 if d not in self._deps:
@@ -236,7 +236,7 @@ class TaskGraph:
 
         Failure policy: if a task fails or is cancelled, every descendant is
         marked blocked and never submitted; the run terminates instead of
-        hanging. Already-DONE tasks count as satisfied dependencies so a graph
+        hanging. Already-SUCCEEDED tasks count as satisfied dependencies so a graph
         can be run again or extended after partial completion. Use
         :attr:`failed` and :attr:`blocked` to inspect the outcome.
         """
@@ -244,42 +244,60 @@ class TaskGraph:
             raise ValueError("max_workers must be greater than 0")
 
         self._validate()
+        # Auto-save after validation so an invalid graph leaves no trace.
+        executor._persist_graph(self)
+
+        try:
+            return self._run_inner(executor, max_workers)
+        finally:
+            executor._persist_graph(self)
+
+    def _run_inner(
+        self,
+        executor: TaskExecutor,
+        max_workers: int,
+    ) -> "TaskGraph":
+        """Inner scheduler loop, split out so :meth:`run` can wrap save logic."""
         # Reset run-scoped state from any previous run.
-        self._blocked = set()
         self._errors = {}
 
         # Empty graph: nothing to wait for. Return early to avoid deadlock.
         if not self._deps:
             return self
 
+        # Snapshot tasks that entered this run already BLOCKED. Only these
+        # are eligible for in-run retry; tasks that get BLOCKED during this
+        # run stay terminal so finally readiness and inactive() remain
+        # consistent within a single invocation.
+        entering_blocked = {
+            tid for tid, t in self._tasks.items() if t.status == TaskStatus.BLOCKED
+        }
+
         futures: dict[str, Future] = {}
-        blocked: set[str] = self._blocked
         lock = RLock()
         done = Event()
+        # Holds an exception raised by the scheduler itself (deadlock detection
+        # etc.) so it can surface from run() instead of swallowing in a
+        # Future callback thread. Single-slot to keep the contract simple.
+        scheduler_error: list[BaseException] = []
+
+        bad_statuses = {
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.BLOCKED,
+        }
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
 
             def succeeded(tid: str) -> bool:
                 """Return whether tid is already done or succeeded in this run."""
-                task = self._tasks[tid]
-                if task.status == TaskStatus.DONE:
-                    return True
-                return (
-                    tid in futures
-                    and futures[tid].done()
-                    and futures[tid].exception() is None
-                )
+                return self._tasks[tid].status == TaskStatus.SUCCEEDED
 
             def inactive(tid: str) -> bool:
                 """Return whether tid can no longer change in this run."""
                 task = self._tasks[tid]
                 return (
-                    task.status in {
-                        TaskStatus.DONE,
-                        TaskStatus.FAILED,
-                        TaskStatus.CANCELLED,
-                    }
-                    or tid in blocked
+                    task.is_terminal
                     or tid in self._errors
                     or (tid in futures and futures[tid].done())
                 )
@@ -290,26 +308,24 @@ class TaskGraph:
                     return all(inactive(d) for d in self._deps[tid])
                 return all(succeeded(d) for d in self._deps[tid])
 
-            def dep_failed_or_blocked(tid: str) -> bool:
-                """Return whether any dependency prevents tid from running."""
-                return any(
-                    d in blocked
-                    or d in self._errors
-                    or self._tasks[d].status == TaskStatus.CANCELLED
-                    or (
-                        d in futures
-                        and futures[d].done()
-                        and futures[d].exception() is not None
-                    )
-                    for d in self._deps[tid]
-                )
+            def first_bad_parent(tid: str) -> str | None:
+                """Return the first dep (in declaration order) blocking ``tid``.
+
+                A parent "blocks" when its status is FAILED, CANCELLED, or
+                BLOCKED. Returns ``None`` if every parent is still
+                recoverable. Pre-start handler errors terminalize the parent
+                to FAILED before raising, so status alone is authoritative.
+                """
+                for d in self._deps[tid]:
+                    if self._tasks[d].status in bad_statuses:
+                        return d
+                return None
 
             def finished(tid: str) -> bool:
                 """Return whether tid no longer needs scheduler attention."""
-                return (
-                    self._tasks[tid].status == TaskStatus.DONE
-                    or tid in blocked
-                    or (tid in futures and futures[tid].done())
+                task = self._tasks[tid]
+                return task.is_terminal or (
+                    tid in futures and futures[tid].done()
                 )
 
             def upstream_tasks(tid: str) -> dict[str, Task]:
@@ -328,31 +344,57 @@ class TaskGraph:
 
             def schedule() -> None:
                 """Advance scheduling until no more tasks can change state."""
-                # Propagate blocking transitively and submit tasks whose deps
-                # are satisfied. Already-DONE tasks are treated as satisfied so
-                # graph reruns and newly-added descendants do not deadlock.
                 changed = True
                 while changed:
                     changed = False
                     for tid in self._deps:
                         task = self._tasks[tid]
+                        if tid in futures:
+                            continue
+                        # SUCCEEDED/CANCELLED are absolute terminal states
+                        # for the run. BLOCKED tasks that entered this run
+                        # blocked are eligible for retry (carryover); BLOCKED
+                        # tasks that became blocked during this run stay
+                        # blocked so finally readiness is unambiguous.
+                        if task.status in {
+                            TaskStatus.SUCCEEDED,
+                            TaskStatus.CANCELLED,
+                        }:
+                            continue
                         if (
-                            tid in futures
-                            or tid in blocked
-                            or task.status == TaskStatus.DONE
+                            task.status == TaskStatus.BLOCKED
+                            and tid not in entering_blocked
                         ):
                             continue
-                        if tid not in self._finally and dep_failed_or_blocked(tid):
-                            blocked.add(tid)
-                            changed = True
-                        elif ready(tid):
-                            if task.can_transition_to(TaskStatus.RUNNING):
-                                submit(tid)
-                            else:
-                                blocked.add(tid)
+                        if tid not in self._finally:
+                            bad = first_bad_parent(tid)
+                            if bad is not None:
+                                if task.status == TaskStatus.PENDING:
+                                    executor.mark_blocked(task, bad)
+                                    changed = True
+                                # Carryover BLOCKED whose parents are still
+                                # bad: stays BLOCKED until parents recover.
+                                continue
+                        if ready(tid) and task.can_transition_to(TaskStatus.RUNNING):
+                            submit(tid)
                             changed = True
 
                 if all(finished(tid) for tid in self._deps):
+                    done.set()
+                    return
+                # No live work to wait on and not finished: deadlocked.
+                live = any(not f.done() for f in futures.values())
+                if not live:
+                    stuck = [
+                        self._tasks[tid].title
+                        for tid in self._deps
+                        if not finished(tid)
+                    ]
+                    scheduler_error.append(
+                        RuntimeError(
+                            f"scheduler made no progress; stuck={stuck!r}"
+                        )
+                    )
                     done.set()
 
             def on_finish(tid: str, fut: Future) -> None:
@@ -369,4 +411,6 @@ class TaskGraph:
 
             done.wait()
 
+        if scheduler_error:
+            raise scheduler_error[0]
         return self
