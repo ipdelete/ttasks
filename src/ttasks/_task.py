@@ -232,6 +232,9 @@ class Task:
             )
             raise ValueError(message)
 
+        if status in {TaskStatus.RUNNING, TaskStatus.SUCCEEDED}:
+            error = None
+
         self.error = error
         self._status = status
         if status == TaskStatus.RUNNING:
