@@ -174,6 +174,7 @@ class TaskGraph:
         """True iff every required task succeeded without run errors."""
         return all(
             self._tasks[tid].status == TaskStatus.SUCCEEDED
+            and tid not in self._errors
             for tid in self._deps
             if tid not in self._optional
         )
