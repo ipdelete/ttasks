@@ -139,12 +139,12 @@ def test_items_yields_task_dep_pairs_in_insertion_order() -> None:
 
 
 def test_is_finally_distinguishes_normal_and_finally_tasks() -> None:
-    """``is_finally`` reflects whether the task was added via add_finally."""
+    """``is_finally`` reflects whether the task was added with finally_=True."""
     a = _bash("A", "echo a")
     report = _bash("Report", "echo report")
     graph = TaskGraph()
     graph[a] = []
-    graph.add_finally(report, after=[a])
+    graph.add(report, after=[a], finally_=True)
     assert not graph.is_finally(a)
     assert graph.is_finally(report)
 
@@ -156,8 +156,8 @@ def test_is_optional_reflects_required_flag_on_finally_tasks() -> None:
     required = _bash("Required", "echo req")
     graph = TaskGraph()
     graph[a] = []
-    graph.add_finally(optional, after=[a], required=False)
-    graph.add_finally(required, after=[a])
+    graph.add(optional, after=[a], finally_=True, required=False)
+    graph.add(required, after=[a], finally_=True)
     assert not graph.is_optional(a)
     assert graph.is_optional(optional)
     assert not graph.is_optional(required)
@@ -449,7 +449,7 @@ def test_add_finally_runs_after_failed_and_blocked_tasks() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.add_finally(report, after=[a, b])
+    graph.add(report, after=[a, b], finally_=True)
 
     graph.run(executor)
 
@@ -476,7 +476,7 @@ def test_optional_finally_failure_does_not_make_graph_not_ok() -> None:
     executor.register(TaskType.BASH, handler)
     graph = TaskGraph()
     graph[a] = []
-    graph.add_finally(report, after=[a], required=False)
+    graph.add(report, after=[a], finally_=True, required=False)
 
     graph.run(executor)
 
@@ -502,7 +502,7 @@ def test_required_finally_failure_makes_graph_not_ok() -> None:
     executor.register(TaskType.BASH, handler)
     graph = TaskGraph()
     graph[a] = []
-    graph.add_finally(report, after=[a])
+    graph.add(report, after=[a], finally_=True)
 
     graph.run(executor)
 
@@ -510,14 +510,21 @@ def test_required_finally_failure_makes_graph_not_ok() -> None:
     assert not graph.ok
 
 
-def test_add_finally_rejects_non_bool_required() -> None:
-    """required is intentionally strict to avoid truthy policy surprises."""
+def test_add_finally_shim_delegates_to_add() -> None:
+    """add_finally is a back-compat shim around add(..., finally_=True)."""
+    a = _bash("A", "echo a")
+    cleanup = _bash("C", "echo c")
     graph = TaskGraph()
-    report = _bash("Report", "")
-    required: Any = "no"
+    graph.add(a)
 
+    graph.add_finally(cleanup, after=[a], required=False)
+
+    assert graph.is_finally(cleanup)
+    assert graph.is_optional(cleanup)
+    # Validation flows through add() and rejects truthy strings.
+    required: Any = "no"
     with pytest.raises(TypeError, match="required must be a bool"):
-        graph.add_finally(report, after=[], required=required)
+        graph.add_finally(cleanup, after=[], required=required)
 
 
 # ---- graph as post-run view -------------------------------------------------

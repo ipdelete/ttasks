@@ -151,8 +151,8 @@ class TestSQLiteGraphCollection:
         optional_cleanup = _bash("optional-cleanup")
         graph = TaskGraph()
         graph[main] = []
-        graph.add_finally(required_cleanup, after=[main])
-        graph.add_finally(optional_cleanup, after=[main], required=False)
+        graph.add(required_cleanup, after=[main], finally_=True)
+        graph.add(optional_cleanup, after=[main], finally_=True, required=False)
         store.graphs.save(graph)
 
         loaded = store.graphs[graph.id]
