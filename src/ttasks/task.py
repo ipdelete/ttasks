@@ -165,6 +165,78 @@ class Task:
         """Return a concise representation focused on identity and status."""
         return f"Task(id={self.id!r}, title={self.title!r}, status={self.status.value})"
 
+    @classmethod
+    def bash(
+        cls,
+        payload: str,
+        *,
+        title: str = "",
+        description: str = "",
+        timeout: float | None = None,
+    ) -> Task:
+        """Construct a BASH task without requiring callers to import TaskType."""
+        return cls(
+            title=title,
+            payload=payload,
+            type=TaskType.BASH,
+            description=description,
+            timeout=timeout,
+        )
+
+    @classmethod
+    def powershell(
+        cls,
+        payload: str,
+        *,
+        title: str = "",
+        description: str = "",
+        timeout: float | None = None,
+    ) -> Task:
+        """Construct a POWERSHELL task without requiring callers to import TaskType."""
+        return cls(
+            title=title,
+            payload=payload,
+            type=TaskType.POWERSHELL,
+            description=description,
+            timeout=timeout,
+        )
+
+    @classmethod
+    def prompt(
+        cls,
+        payload: str,
+        *,
+        title: str = "",
+        description: str = "",
+        timeout: float | None = None,
+    ) -> Task:
+        """Construct a PROMPT task without requiring callers to import TaskType."""
+        return cls(
+            title=title,
+            payload=payload,
+            type=TaskType.PROMPT,
+            description=description,
+            timeout=timeout,
+        )
+
+    @classmethod
+    def agent(
+        cls,
+        payload: str,
+        *,
+        title: str = "",
+        description: str = "",
+        timeout: float | None = None,
+    ) -> Task:
+        """Construct an AGENT task without requiring callers to import TaskType."""
+        return cls(
+            title=title,
+            payload=payload,
+            type=TaskType.AGENT,
+            description=description,
+            timeout=timeout,
+        )
+
 
 @dataclass(frozen=True)
 class TaskResult:

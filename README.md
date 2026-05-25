@@ -15,14 +15,14 @@ dependency graphs with `TaskGraph`.
 ## Quick start
 
 ```python
-from ttasks import Task, TaskType, make_default_executor
+from ttasks import Task, make_default_executor
 
 executor = make_default_executor()
-task = Task(title="Say hello", payload="echo hello", type=TaskType.BASH)
+task = Task.bash("echo hello", title="Say hello")
 
 result = executor.execute(task)
 
-assert task.status.value == "done"
+assert task.is_done
 assert result.output == "hello\n"
 assert task.result is result
 ```
@@ -34,15 +34,18 @@ assert task.result is result
 A `Task` is the unit of work tracked by the system.
 
 ```python
-from ttasks import Task, TaskType
+from ttasks import Task
 
-task = Task(
+task = Task.bash(
+    "ls -la",
     title="List files",
     description="Show files in the current directory",
-    payload="ls -la",
-    type=TaskType.BASH,
 )
 ```
+
+Convenience factories `Task.bash()`, `Task.powershell()`, `Task.prompt()`, and
+`Task.agent()` create tasks of the corresponding `TaskType` without making
+callers import `TaskType`.
 
 Task status is read-only from the outside. Use `transition_to()` for explicit
 state-machine transitions or `cancel()` for cancellation. Once a task reaches
@@ -92,10 +95,10 @@ collections keyed by the object's own immutable ID:
 saved:
 
 ```python
-from ttasks import InMemoryStore, Task, TaskType, TaskGraph
+from ttasks import InMemoryStore, Task, TaskGraph
 
 store = InMemoryStore()
-task = Task(title="hello", payload="echo hi", type=TaskType.BASH)
+task = Task.bash("echo hi", title="hello")
 store.tasks.save(task)            # alias for store.tasks[task.id] = task
 assert store.tasks[task.id] is task
 
@@ -115,13 +118,13 @@ shortcuts.
 `InMemoryStore`. A single SQLite file holds both tasks and graphs.
 
 ```python
-from ttasks import Task, TaskGraph, TaskType, make_default_executor
+from ttasks import Task, TaskGraph, make_default_executor
 from ttasks.storage.sqlite import SQLiteStore
 
 store = SQLiteStore("ttasks.db")
 
-build = Task(title="build", payload="echo build", type=TaskType.BASH)
-test  = Task(title="test",  payload="echo test",  type=TaskType.BASH)
+build = Task.bash("echo build", title="build")
+test  = Task.bash("echo test",  title="test")
 
 graph = TaskGraph(title="build pipeline")
 graph[build] = []
@@ -212,13 +215,12 @@ Prompt tasks send `Task.payload` to Copilot and store the assistant message text
 in `TaskResult.output`:
 
 ```python
-from ttasks import Task, TaskType, make_default_executor
+from ttasks import Task, make_default_executor
 
 executor = make_default_executor()
-task = Task(
+task = Task.prompt(
+    "Explain a DAG in one concise sentence.",
     title="Explain DAGs",
-    payload="Explain a DAG in one concise sentence.",
-    type=TaskType.PROMPT,
 )
 
 result = executor.execute(task)
@@ -250,13 +252,12 @@ Agent tasks send `Task.payload` to Copilot with the SDK's default tools enabled
 and permission requests approved automatically:
 
 ```python
-from ttasks import Task, TaskType, make_default_executor
+from ttasks import Task, make_default_executor
 
 executor = make_default_executor()
-task = Task(
+task = Task.agent(
+    "Read README.md and summarize this project in one paragraph.",
     title="Inspect README",
-    payload="Read README.md and summarize this project in one paragraph.",
-    type=TaskType.AGENT,
 )
 
 result = executor.execute(task)
@@ -319,7 +320,7 @@ Subscriber exceptions do not fail task execution. They are recorded on
 `Task.timeout` defaults to `None` intentionally.
 
 ```python
-Task(title="Long task", payload="sleep 30", type=TaskType.BASH)
+Task.bash("sleep 30", title="Long task")
 ```
 
 `None` means no automatic timeout is applied. The subprocess is allowed to run
@@ -332,12 +333,7 @@ executor.cancel(task)
 Use a positive timeout for bounded subprocess execution:
 
 ```python
-Task(
-    title="Bounded task",
-    payload="sleep 30",
-    type=TaskType.BASH,
-    timeout=5,
-)
+Task.bash("sleep 30", title="Bounded task", timeout=5)
 ```
 
 If the timeout is exceeded, the executor terminates the subprocess, marks the
@@ -355,14 +351,14 @@ A non-zero subprocess exit raises `TaskExecutionError`, marks the task `FAILED`,
 and preserves structured process details:
 
 ```python
-from ttasks import Task, TaskExecutionError, TaskType
+from ttasks import Task, TaskExecutionError
 
-task = Task(title="Fail", payload="echo boom >&2; exit 7", type=TaskType.BASH)
+task = Task.bash("echo boom >&2; exit 7", title="Fail")
 
 try:
     executor.execute(task)
 except TaskExecutionError:
-    assert task.status.value == "failed"
+    assert task.is_failed
     assert task.result is not None
     print(task.result.error)
     print(task.result.returncode)
@@ -392,11 +388,11 @@ the transition to `CANCELLED` and records the terminal `TaskResult`.
 registered in the graph before `run()`.
 
 ```python
-from ttasks import TaskGraph, Task, TaskType, make_default_executor
+from ttasks import TaskGraph, Task, make_default_executor
 
-build = Task(title="Build", payload="echo build", type=TaskType.BASH)
-test = Task(title="Test", payload="echo test", type=TaskType.BASH)
-package = Task(title="Package", payload="echo package", type=TaskType.BASH)
+build = Task.bash("echo build", title="Build")
+test = Task.bash("echo test", title="Test")
+package = Task.bash("echo package", title="Package")
 
 graph = TaskGraph(title="build pipeline")
 graph[build] = []
@@ -445,10 +441,9 @@ Use `add_finally()` for reporting or cleanup tasks that should run after other
 tasks are no longer active, even when those tasks failed or were blocked:
 
 ```python
-recommend = Task(
+recommend = Task.prompt(
+    "Summarize preflight output",
     title="Recommend next action",
-    payload="Summarize preflight output",
-    type=TaskType.PROMPT,
 )
 
 graph.add_finally(

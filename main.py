@@ -16,23 +16,23 @@ flat re-export surface, not from submodules.
 import time
 from pathlib import Path
 
-from ttasks import Task, TaskEvent, TaskGraph, TaskType, make_default_executor
+from ttasks import Task, TaskEvent, TaskGraph, make_default_executor
 from ttasks.storage.sqlite import SQLiteStore
 
 
 def _bash(title: str, payload: str) -> Task:
     """Shorthand for the demo: create a bash one-liner task."""
-    return Task(title=title, type=TaskType.BASH, payload=payload)
+    return Task.bash(payload, title=title)
 
 
 def _prompt(title: str, payload: str) -> Task:
     """Shorthand for the demo: create a Copilot prompt task."""
-    return Task(title=title, type=TaskType.PROMPT, payload=payload, timeout=30)
+    return Task.prompt(payload, title=title, timeout=30)
 
 
 def _agent(title: str, payload: str) -> Task:
     """Shorthand for the demo: create a Copilot agent task."""
-    return Task(title=title, type=TaskType.AGENT, payload=payload, timeout=60)
+    return Task.agent(payload, title=title, timeout=60)
 
 
 def _print_graph(graph: TaskGraph) -> None:
