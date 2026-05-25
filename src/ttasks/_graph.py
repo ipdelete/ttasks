@@ -293,21 +293,6 @@ class TaskGraph:
                 """Return whether tid is already done or succeeded in this run."""
                 return self._tasks[tid].status == TaskStatus.SUCCEEDED
 
-            def inactive(tid: str) -> bool:
-                """Return whether tid can no longer change in this run."""
-                task = self._tasks[tid]
-                return (
-                    task.is_terminal
-                    or tid in self._errors
-                    or (tid in futures and futures[tid].done())
-                )
-
-            def ready(tid: str) -> bool:
-                """Return whether all upstream dependencies are satisfied."""
-                if tid in self._finally:
-                    return all(inactive(d) for d in self._deps[tid])
-                return all(succeeded(d) for d in self._deps[tid])
-
             def retryable_this_run(tid: str) -> bool:
                 """Return whether a bad-status task can still recover this run."""
                 task = self._tasks[tid]
@@ -319,6 +304,21 @@ class TaskGraph:
                         or tid in entering_blocked
                     )
                 )
+
+            def inactive(tid: str) -> bool:
+                """Return whether tid can no longer change in this run."""
+                task = self._tasks[tid]
+                return (
+                    (task.is_terminal and not retryable_this_run(tid))
+                    or tid in self._errors
+                    or (tid in futures and futures[tid].done())
+                )
+
+            def ready(tid: str) -> bool:
+                """Return whether all upstream dependencies are satisfied."""
+                if tid in self._finally:
+                    return all(inactive(d) for d in self._deps[tid])
+                return all(succeeded(d) for d in self._deps[tid])
 
             def first_bad_parent(tid: str) -> str | None:
                 """Return the first dep (in declaration order) blocking ``tid``.
