@@ -601,6 +601,18 @@ def test_powershell_task_executes() -> None:
     assert not executor.is_running(task.id)
 
 
+def test_bash_task_with_non_utf8_output_succeeds_with_replacement_text() -> None:
+    """Successful subprocesses are not failed by undecodable output bytes."""
+    executor = TaskExecutor()
+    task = Task.bash("python -c 'import sys; sys.stdout.buffer.write(bytes([255]))'")
+
+    result = executor.execute(task)
+
+    assert task.status == TaskStatus.SUCCEEDED
+    assert result.output == "�"
+    assert result.returncode == 0
+
+
 def test_bash_task_without_timeout_waits_for_completion() -> None:
     """timeout=None means the subprocess is allowed to run until it exits."""
     executor = TaskExecutor()
