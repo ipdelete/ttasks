@@ -166,6 +166,25 @@ class Task:
         return f"Task(id={self.id!r}, title={self.title!r}, status={self.status.value})"
 
     @classmethod
+    def _make(
+        cls,
+        task_type: TaskType,
+        payload: str,
+        *,
+        title: str,
+        description: str,
+        timeout: float | None,
+    ) -> Task:
+        """Construct a task of ``task_type`` from the shared factory kwargs."""
+        return cls(
+            title=title,
+            payload=payload,
+            type=task_type,
+            description=description,
+            timeout=timeout,
+        )
+
+    @classmethod
     def bash(
         cls,
         payload: str,
@@ -175,12 +194,9 @@ class Task:
         timeout: float | None = None,
     ) -> Task:
         """Construct a BASH task without requiring callers to import TaskType."""
-        return cls(
-            title=title,
-            payload=payload,
-            type=TaskType.BASH,
-            description=description,
-            timeout=timeout,
+        return cls._make(
+            TaskType.BASH, payload,
+            title=title, description=description, timeout=timeout,
         )
 
     @classmethod
@@ -193,12 +209,9 @@ class Task:
         timeout: float | None = None,
     ) -> Task:
         """Construct a POWERSHELL task without requiring callers to import TaskType."""
-        return cls(
-            title=title,
-            payload=payload,
-            type=TaskType.POWERSHELL,
-            description=description,
-            timeout=timeout,
+        return cls._make(
+            TaskType.POWERSHELL, payload,
+            title=title, description=description, timeout=timeout,
         )
 
     @classmethod
@@ -211,12 +224,9 @@ class Task:
         timeout: float | None = None,
     ) -> Task:
         """Construct a PROMPT task without requiring callers to import TaskType."""
-        return cls(
-            title=title,
-            payload=payload,
-            type=TaskType.PROMPT,
-            description=description,
-            timeout=timeout,
+        return cls._make(
+            TaskType.PROMPT, payload,
+            title=title, description=description, timeout=timeout,
         )
 
     @classmethod
@@ -229,12 +239,9 @@ class Task:
         timeout: float | None = None,
     ) -> Task:
         """Construct an AGENT task without requiring callers to import TaskType."""
-        return cls(
-            title=title,
-            payload=payload,
-            type=TaskType.AGENT,
-            description=description,
-            timeout=timeout,
+        return cls._make(
+            TaskType.AGENT, payload,
+            title=title, description=description, timeout=timeout,
         )
 
 
