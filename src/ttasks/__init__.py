@@ -4,21 +4,21 @@ The public surface is intentionally flat: ``from ttasks import X`` is the
 canonical and only supported import path for every name in ``__all__``.
 """
 
+from ._events import EventBus, TaskEvent, TaskEventType
 from ._exceptions import TaskCancelled, TaskExecutionError, TaskTimeoutError
-from .events import EventBus, TaskEvent, TaskEventType
-from .executor import (
+from ._executor import (
     TaskContext,
     TaskExecutor,
     make_copilot_agent_handler,
     make_copilot_prompt_handler,
 )
-from .storage.sqlite import SQLiteStore
-from .store import (
+from ._graph import TaskGraph
+from ._store import (
     InMemoryStore,
     Store,
 )
-from .task import Task, TaskResult, TaskStatus, TaskType
-from .workflow import TaskGraph
+from ._task import Task, TaskResult, TaskStatus, TaskType
+from .storage.sqlite import SQLiteStore
 
 __all__ = [
     "EventBus",

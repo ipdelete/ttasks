@@ -7,9 +7,7 @@ from typing import Any
 import pytest
 from conftest import _bash
 
-from ttasks.executor import TaskExecutor
-from ttasks.task import TaskStatus, TaskType
-from ttasks.workflow import TaskGraph
+from ttasks import TaskExecutor, TaskGraph, TaskStatus, TaskType
 
 # ---- Graph identity ----------------------------------------------------------
 

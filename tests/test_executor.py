@@ -14,18 +14,21 @@ from unittest.mock import Mock, patch
 import pytest
 from conftest import _bash
 
-from ttasks.events import TaskEvent, TaskEventType
-from ttasks.executor import (
+from ttasks import (
+    Task,
     TaskCancelled,
     TaskContext,
+    TaskEvent,
+    TaskEventType,
     TaskExecutionError,
     TaskExecutor,
     TaskResult,
+    TaskStatus,
     TaskTimeoutError,
+    TaskType,
     make_copilot_agent_handler,
     make_copilot_prompt_handler,
 )
-from ttasks.task import Task, TaskStatus, TaskType
 
 
 def assert_result_timing(result: TaskResult, before: datetime, after: datetime) -> None:
@@ -510,7 +513,7 @@ def test_run_command_terminates_if_task_cancelled_during_process_start() -> None
         return process
 
     with (
-        patch("ttasks.executor.subprocess.Popen", side_effect=fake_popen),
+        patch("ttasks._executor.subprocess.Popen", side_effect=fake_popen),
         patch.object(executor, "_terminate_process") as terminate,
         pytest.raises(TaskCancelled, match=f"Task {task.id!r} was cancelled"),
     ):
@@ -538,7 +541,7 @@ def test_terminate_process_ignores_already_exited_process() -> None:
     process = Mock(spec=subprocess.Popen)
     process.pid = 12345
 
-    with patch("ttasks.executor.os.killpg", side_effect=ProcessLookupError):
+    with patch("ttasks._executor.os.killpg", side_effect=ProcessLookupError):
         TaskExecutor._terminate_process(process)
 
     process.wait.assert_not_called()
@@ -550,7 +553,7 @@ def test_terminate_process_escalates_to_sigkill() -> None:
     process.pid = 12345
     process.wait.side_effect = [subprocess.TimeoutExpired(cmd="cmd", timeout=5), 0]
 
-    with patch("ttasks.executor.os.killpg") as killpg:
+    with patch("ttasks._executor.os.killpg") as killpg:
         TaskExecutor._terminate_process(process)
 
     assert killpg.call_args_list == [
@@ -567,7 +570,7 @@ def test_terminate_process_ignores_missing_group_during_sigkill() -> None:
     process.wait.side_effect = subprocess.TimeoutExpired(cmd="cmd", timeout=5)
 
     with patch(
-        "ttasks.executor.os.killpg",
+        "ttasks._executor.os.killpg",
         side_effect=[None, ProcessLookupError],
     ) as killpg:
         TaskExecutor._terminate_process(process)
@@ -987,7 +990,7 @@ def test_executor_without_store_does_not_record_persistence() -> None:
 
 def test_executor_auto_persists_each_lifecycle_transition() -> None:
     """Both STARTED and SUCCEEDED transitions write the task to the store."""
-    from ttasks.store import InMemoryStore
+    from ttasks import InMemoryStore
 
     store = InMemoryStore()
 
@@ -1030,7 +1033,7 @@ def test_executor_auto_persists_each_lifecycle_transition() -> None:
 
 def test_executor_saves_before_emitting_lifecycle_event() -> None:
     """Subscribers reading the store on event see the new task state."""
-    from ttasks.store import InMemoryStore
+    from ttasks import InMemoryStore
 
     store = InMemoryStore()
     executor = TaskExecutor(store=store)
@@ -1104,7 +1107,7 @@ def test_empty_executor_has_no_handlers_registered() -> None:
 
 def test_empty_executor_forwards_store_for_auto_persist() -> None:
     """TaskExecutor.empty(store=...) still attaches the store for auto-persist."""
-    from ttasks.store import InMemoryStore
+    from ttasks import InMemoryStore
 
     store = InMemoryStore()
     executor = TaskExecutor.empty(store=store)

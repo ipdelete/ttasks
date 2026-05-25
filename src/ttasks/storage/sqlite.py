@@ -9,8 +9,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from ttasks.task import Task, TaskResult, TaskStatus, TaskType
-from ttasks.workflow import TaskGraph
+from .._graph import TaskGraph
+from .._task import Task, TaskResult, TaskStatus, TaskType
 
 _SCHEMA_VERSION = "1"
 _CONNECT_TIMEOUT_SECONDS = 30.0

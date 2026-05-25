@@ -2,7 +2,7 @@
 
 import pytest
 
-from ttasks.task import Task, TaskType
+from ttasks import Task, TaskType
 
 
 def test_bash_factory_sets_type_and_payload() -> None:

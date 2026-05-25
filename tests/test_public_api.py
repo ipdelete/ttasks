@@ -8,11 +8,11 @@ vice versa), this test fails.
 """
 
 import ttasks
-from ttasks import events as events_mod
-from ttasks import executor as executor_mod
-from ttasks import store as store_mod
-from ttasks import task as task_mod
-from ttasks import workflow as workflow_mod
+from ttasks import _events as events_mod
+from ttasks import _executor as executor_mod
+from ttasks import _graph as graph_mod
+from ttasks import _store as store_mod
+from ttasks import _task as task_mod
 from ttasks.storage import sqlite as sqlite_mod
 
 EXPECTED_PUBLIC_NAMES = {
@@ -73,5 +73,5 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
         ttasks.make_copilot_prompt_handler
         is executor_mod.make_copilot_prompt_handler
     )
-    assert ttasks.TaskGraph is workflow_mod.TaskGraph
+    assert ttasks.TaskGraph is graph_mod.TaskGraph
 

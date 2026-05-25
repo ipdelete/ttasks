@@ -13,12 +13,12 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
+from ._events import EventBus, TaskEvent, TaskEventType
 from ._exceptions import TaskCancelled, TaskExecutionError, TaskTimeoutError
-from .events import EventBus, TaskEvent, TaskEventType
-from .task import Task, TaskResult, TaskStatus, TaskType
+from ._task import Task, TaskResult, TaskStatus, TaskType
 
 if TYPE_CHECKING:
-    from .store import Store
+    from ._store import Store
 
 
 @dataclass(frozen=True, init=False)

@@ -16,8 +16,8 @@ from __future__ import annotations
 from collections.abc import Iterator, MutableMapping
 from typing import Protocol, runtime_checkable
 
-from .task import Task
-from .workflow import TaskGraph
+from ._graph import TaskGraph
+from ._task import Task
 
 
 class TaskCollection(Protocol):

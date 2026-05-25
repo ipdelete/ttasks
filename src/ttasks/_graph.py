@@ -11,8 +11,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from threading import Event, RLock
 
-from .executor import TaskExecutor
-from .task import Task, TaskStatus
+from ._executor import TaskExecutor
+from ._task import Task, TaskStatus
 
 
 class TaskGraph:

@@ -3,14 +3,13 @@
 import pytest
 from conftest import _bash, _opaque
 
-from ttasks.store import (
-    InMemoryGraphCollection,
+from ttasks import (
     InMemoryStore,
-    InMemoryTaskCollection,
     Store,
+    TaskGraph,
+    TaskStatus,
 )
-from ttasks.task import TaskStatus
-from ttasks.workflow import TaskGraph
+from ttasks._store import InMemoryGraphCollection, InMemoryTaskCollection
 
 # ---- InMemoryTaskCollection -------------------------------------------------
 

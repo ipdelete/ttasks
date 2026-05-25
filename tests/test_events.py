@@ -5,8 +5,7 @@ from typing import Any
 
 import pytest
 
-from ttasks.events import EventBus, TaskEvent, TaskEventType
-from ttasks.task import Task, TaskStatus
+from ttasks import EventBus, Task, TaskEvent, TaskEventType, TaskStatus
 
 
 def _event(task: Task, event_type: TaskEventType) -> TaskEvent:

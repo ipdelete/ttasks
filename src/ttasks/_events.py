@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from threading import RLock
 
-from .task import Task, TaskStatus
+from ._task import Task, TaskStatus
 
 
 class TaskEventType(Enum):

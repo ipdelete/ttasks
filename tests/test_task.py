@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from ttasks.task import Task, TaskResult, TaskStatus
+from ttasks import Task, TaskResult, TaskStatus
 
 
 def test_type_must_be_task_type() -> None:

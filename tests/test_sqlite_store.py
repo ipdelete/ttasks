@@ -7,10 +7,8 @@ from pathlib import Path
 import pytest
 from conftest import _bash, _opaque
 
-from ttasks.executor import TaskExecutor
+from ttasks import TaskExecutor, TaskGraph, TaskResult, TaskStatus, TaskType
 from ttasks.storage.sqlite import SQLiteStore
-from ttasks.task import TaskResult, TaskStatus, TaskType
-from ttasks.workflow import TaskGraph
 
 
 @pytest.fixture()

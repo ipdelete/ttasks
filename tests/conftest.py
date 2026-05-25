@@ -4,7 +4,7 @@ Pytest inserts the directory containing this file into ``sys.path`` so test
 modules can import these helpers directly with ``from conftest import ...``.
 """
 
-from ttasks.task import Task
+from ttasks import Task
 
 
 def _bash(title: str = "T", payload: str = "echo t") -> Task:
