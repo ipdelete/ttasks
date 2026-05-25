@@ -15,9 +15,9 @@ dependency graphs with `TaskGraph`.
 ## Quick start
 
 ```python
-from ttasks import Task, make_default_executor
+from ttasks import Task, TaskExecutor
 
-executor = make_default_executor()
+executor = TaskExecutor()
 task = Task.bash("echo hello", title="Say hello")
 
 result = executor.execute(task)
@@ -99,18 +99,25 @@ from ttasks import InMemoryStore, Task, TaskGraph
 
 store = InMemoryStore()
 task = Task.bash("echo hi", title="hello")
-store.tasks.save(task)            # alias for store.tasks[task.id] = task
+store.tasks.save(task)
 assert store.tasks[task.id] is task
 
 graph = TaskGraph(title="build")
 graph[task] = []
-store.graphs[graph.id] = graph
+store.graphs.save(graph)
 assert graph in store.graphs
 ```
 
-The collections enforce that objects are stored under their own immutable
-IDs. `task in store.tasks` and `graph in store.graphs` are id-membership
-shortcuts.
+`save()` is the canonical write idiom — it stores the object under its own
+immutable ID. The collections also implement the full `MutableMapping`
+protocol (`__iter__`, `__getitem__`, `__contains__`, `__setitem__`,
+`.values()`, `.items()`, etc.) so comprehensions, `dict(store.tasks)`, and
+membership tests work naturally:
+
+```python
+done = [t for t in store.tasks.values() if t.is_done]
+assert task in store.tasks   # id-membership shortcut
+```
 
 ### SQLiteStore
 
@@ -118,7 +125,7 @@ shortcuts.
 `InMemoryStore`. A single SQLite file holds both tasks and graphs.
 
 ```python
-from ttasks import Task, TaskGraph, make_default_executor
+from ttasks import Task, TaskGraph, TaskExecutor
 from ttasks.storage.sqlite import SQLiteStore
 
 store = SQLiteStore("ttasks.db")
@@ -131,9 +138,9 @@ graph[build] = []
 graph[test] = [build]
 
 # Atomic: graph metadata + edges + member task snapshots in one transaction.
-store.graphs[graph.id] = graph
+store.graphs.save(graph)
 
-executor = make_default_executor(store=store)
+executor = TaskExecutor(store=store)
 graph.run(executor)               # tasks auto-persist on each transition
 
 restored = SQLiteStore("ttasks.db").tasks[build.id]
@@ -164,23 +171,42 @@ Persistence failures are isolated from execution: they are recorded on
 out of `execute()` and does not transition the task to `FAILED`.
 
 ```python
-from ttasks import make_default_executor
+from ttasks import TaskExecutor
 from ttasks.storage.sqlite import SQLiteStore
 
 store = SQLiteStore("ttasks.db")
-executor = make_default_executor(store=store)
+executor = TaskExecutor(store=store)
 # Every task executed through this executor is durably persisted automatically.
 ```
 
 ### TaskExecutor
 
-`TaskExecutor` dispatches tasks to handlers registered by `TaskType`.
+`TaskExecutor` dispatches tasks to handlers registered by `TaskType`. The
+default constructor pre-registers built-in handlers for every `TaskType`:
+
+- `TaskType.BASH`
+- `TaskType.POWERSHELL`
+- `TaskType.PROMPT`
+- `TaskType.AGENT`
 
 ```python
 from ttasks import TaskExecutor, TaskType
 
 executor = TaskExecutor()
-executor.register(TaskType.BASH, lambda context: "handled")
+executor.register(TaskType.BASH, lambda context: "handled")   # override
+```
+
+`PROMPT` uses the GitHub Copilot SDK for a no-tools, single-turn text prompt.
+`AGENT` uses the SDK for a tool-capable, single-turn instruction with permission
+requests approved automatically. Treat `AGENT` payloads as trusted executable
+instructions, similar to `BASH` payloads.
+
+Use `TaskExecutor.empty()` to construct an executor with no built-in handlers
+when you want a clean slate:
+
+```python
+executor = TaskExecutor.empty()
+executor.register(TaskType.BASH, my_handler)
 ```
 
 Handler contract:
@@ -197,27 +223,15 @@ For single-task execution, upstream refs can be passed manually:
 executor.execute(child_task, upstream={parent_task.id: parent_task})
 ```
 
-The default executor registers built-in handlers for:
-
-- `TaskType.BASH`
-- `TaskType.POWERSHELL`
-- `TaskType.PROMPT`
-- `TaskType.AGENT`
-
-`PROMPT` uses the GitHub Copilot SDK for a no-tools, single-turn text prompt.
-`AGENT` uses the SDK for a tool-capable, single-turn instruction with permission
-requests approved automatically. Treat `AGENT` payloads as trusted executable
-instructions, similar to `BASH` payloads.
-
 ### Prompt tasks
 
 Prompt tasks send `Task.payload` to Copilot and store the assistant message text
 in `TaskResult.output`:
 
 ```python
-from ttasks import Task, make_default_executor
+from ttasks import Task, TaskExecutor
 
-executor = make_default_executor()
+executor = TaskExecutor()
 task = Task.prompt(
     "Explain a DAG in one concise sentence.",
     title="Explain DAGs",
@@ -252,9 +266,9 @@ Agent tasks send `Task.payload` to Copilot with the SDK's default tools enabled
 and permission requests approved automatically:
 
 ```python
-from ttasks import Task, make_default_executor
+from ttasks import Task, TaskExecutor
 
-executor = make_default_executor()
+executor = TaskExecutor()
 task = Task.agent(
     "Read README.md and summarize this project in one paragraph.",
     title="Inspect README",
@@ -390,7 +404,7 @@ the transition to `CANCELLED` and records the terminal `TaskResult`.
 registered in the graph before `run()`.
 
 ```python
-from ttasks import TaskGraph, Task, make_default_executor
+from ttasks import TaskGraph, Task, TaskExecutor
 
 build = Task.bash("echo build", title="Build")
 test = Task.bash("echo test", title="Test")
@@ -401,7 +415,7 @@ graph[build] = []
 graph[test] = [build]
 graph[package] = [test]
 
-graph.run(make_default_executor())
+graph.run(TaskExecutor())
 
 assert graph.ok
 assert graph.succeeded == [build, test, package]

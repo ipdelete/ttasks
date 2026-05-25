@@ -13,11 +13,11 @@ from ttasks import (
     Task,
     TaskContext,
     TaskEvent,
+    TaskExecutor,
     TaskGraph,
     TaskStatus,
     TaskType,
     make_copilot_prompt_handler,
-    make_default_executor,
 )
 
 
@@ -181,7 +181,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Run the preflight graph and return a shell-friendly exit code."""
     args = parse_args()
-    executor = make_default_executor()
+    executor = TaskExecutor()
     if args.recommend:
         executor.register(TaskType.PROMPT, make_recommendation_handler())
     unsubscribe = executor.events.subscribe(print_event)

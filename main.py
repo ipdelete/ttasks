@@ -16,7 +16,7 @@ flat re-export surface, not from submodules.
 import time
 from pathlib import Path
 
-from ttasks import Task, TaskEvent, TaskGraph, make_default_executor
+from ttasks import Task, TaskEvent, TaskExecutor, TaskGraph
 from ttasks.storage.sqlite import SQLiteStore
 
 
@@ -69,7 +69,7 @@ def main() -> None:
     store = SQLiteStore(store_path)
 
     # The executor auto-persists every task transition to store.tasks.
-    executor = make_default_executor(store=store)
+    executor = TaskExecutor(store=store)
     unsubscribe_print = executor.events.subscribe(_print_event)
 
     # Graph alpha: X -> Y -> Z (linear; Z is a tool-capable agent task).

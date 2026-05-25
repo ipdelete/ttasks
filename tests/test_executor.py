@@ -23,7 +23,6 @@ from ttasks.executor import (
     TaskTimeoutError,
     make_copilot_agent_handler,
     make_copilot_prompt_handler,
-    make_default_executor,
 )
 from ttasks.task import Task, TaskStatus, TaskType
 
@@ -262,7 +261,7 @@ def test_task_result_wraps_non_string_raw_values() -> None:
 
 def test_execute_rejects_task_without_registered_handler() -> None:
     """Tasks without handlers are rejected before they start running."""
-    executor = TaskExecutor()
+    executor = TaskExecutor.empty()
     task = Task(title="Example", payload="", type=TaskType.BASH)
 
     with pytest.raises(ValueError, match="No handler registered for task type 'bash'"):
@@ -343,7 +342,7 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
 
 def test_successful_execute_sets_task_result_timing() -> None:
     """Successful execution records start, finish, and duration timing."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
 
     before = datetime.now()
@@ -356,7 +355,7 @@ def test_successful_execute_sets_task_result_timing() -> None:
 
 def test_default_executor_can_execute_bash() -> None:
     """The default executor includes a working BASH handler."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
 
     result = executor.execute(task)
@@ -373,7 +372,7 @@ def test_default_executor_can_execute_bash() -> None:
 
 def test_bash_task_supports_shell_syntax() -> None:
     """BASH tasks intentionally execute shell syntax such as pipes."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(
         title="Shell syntax",
         payload="printf 'hello\\n' | grep hello",
@@ -389,7 +388,7 @@ def test_bash_task_supports_shell_syntax() -> None:
 
 def test_bash_nonzero_exit_marks_task_failed() -> None:
     """A shell command with a non-zero return code fails the task."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Failing command", payload="exit 7", type=TaskType.BASH)
 
     with pytest.raises(TaskExecutionError, match="exited with code 7"):
@@ -402,7 +401,7 @@ def test_bash_nonzero_exit_marks_task_failed() -> None:
 
 def test_bash_failure_uses_stderr_as_error() -> None:
     """Subprocess stderr is preferred over the generic exit-code message."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(
         title="Failing command",
         payload="echo boom >&2; exit 1",
@@ -419,7 +418,7 @@ def test_bash_failure_uses_stderr_as_error() -> None:
 
 def test_failed_subprocess_result_preserves_output_error_and_returncode() -> None:
     """Failed subprocesses still attach structured process details."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(
         title="Structured failure",
         payload="echo before; echo boom >&2; exit 7",
@@ -439,7 +438,7 @@ def test_failed_subprocess_result_preserves_output_error_and_returncode() -> Non
 
 def test_running_process_registry_is_cleaned_after_failure() -> None:
     """Failed subprocesses are removed from the running-process registry."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Fail", payload="exit 1", type=TaskType.BASH)
 
     with pytest.raises(RuntimeError):
@@ -451,7 +450,7 @@ def test_running_process_registry_is_cleaned_after_failure() -> None:
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
 def test_powershell_task_executes() -> None:
     """PowerShell tasks execute when pwsh is available on the host."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="PowerShell", payload="'hello'", type=TaskType.POWERSHELL)
 
     result = executor.execute(task)
@@ -464,7 +463,7 @@ def test_powershell_task_executes() -> None:
 
 def test_bash_task_without_timeout_waits_for_completion() -> None:
     """timeout=None means the subprocess is allowed to run until it exits."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="No timeout", payload="sleep 0.1; echo done", type=TaskType.BASH)
 
     result = executor.execute(task)
@@ -477,7 +476,7 @@ def test_bash_task_without_timeout_waits_for_completion() -> None:
 
 def test_bash_task_times_out() -> None:
     """A subprocess exceeding task.timeout is terminated and marked FAILED."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(
         title="Slow",
         payload="sleep 30",
@@ -495,7 +494,7 @@ def test_bash_task_times_out() -> None:
 
 def test_timed_out_subprocess_result_preserves_partial_output() -> None:
     """Timeout results retain output captured before termination."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(
         title="Partial timeout",
         payload="echo before; echo warn >&2; sleep 30",
@@ -766,7 +765,7 @@ def test_default_prompt_handler_uses_copilot_sdk(
 ) -> None:
     """The default PROMPT handler sends one no-tools Copilot prompt."""
     recorded = install_fake_copilot(monkeypatch, content="hello back")
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
 
     result = executor.execute(task)
@@ -789,7 +788,7 @@ def test_copilot_prompt_handler_uses_task_timeout(
 ) -> None:
     """Task timeout overrides the Copilot prompt handler default timeout."""
     recorded = install_fake_copilot(monkeypatch, content="done")
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT, timeout=2.5)
 
     executor.execute(task)
@@ -802,7 +801,7 @@ def test_copilot_prompt_handler_allows_model_override(
 ) -> None:
     """Callers can register a Copilot prompt handler with a different model."""
     recorded = install_fake_copilot(monkeypatch, content="done")
-    executor = make_default_executor()
+    executor = TaskExecutor()
     executor.register(
         TaskType.PROMPT,
         make_copilot_prompt_handler(model="gpt-custom", timeout=12),
@@ -823,7 +822,7 @@ def test_copilot_prompt_handler_none_response_returns_empty_string(
 ) -> None:
     """A prompt with no assistant message normalizes to empty output."""
     install_fake_copilot(monkeypatch, content=None)
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
 
     result = executor.execute(task)
@@ -836,7 +835,7 @@ def test_copilot_prompt_handler_unknown_response_data_returns_empty_string(
 ) -> None:
     """Unexpected Copilot response data normalizes to empty output."""
     install_fake_copilot(monkeypatch, data=object())
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
 
     result = executor.execute(task)
@@ -849,7 +848,7 @@ def test_copilot_prompt_handler_sdk_error_marks_task_failed(
 ) -> None:
     """Copilot SDK errors follow normal task failure handling."""
     install_fake_copilot(monkeypatch, error=RuntimeError("sdk boom"))
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Prompt", payload="hello", type=TaskType.PROMPT)
 
     with pytest.raises(RuntimeError, match="sdk boom"):
@@ -870,7 +869,7 @@ def test_default_agent_handler_uses_copilot_sdk_with_tools_enabled(
 ) -> None:
     """The default AGENT handler sends one tool-capable Copilot instruction."""
     recorded = install_fake_copilot(monkeypatch, content="agent done")
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Agent", payload="inspect repo", type=TaskType.AGENT)
 
     result = executor.execute(task)
@@ -890,7 +889,7 @@ def test_copilot_agent_handler_uses_task_timeout(
 ) -> None:
     """Task timeout overrides the Copilot agent handler no-timeout default."""
     recorded = install_fake_copilot(monkeypatch, content="done")
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Agent", payload="hello", type=TaskType.AGENT, timeout=3.5)
 
     executor.execute(task)
@@ -903,7 +902,7 @@ def test_copilot_agent_handler_allows_model_override(
 ) -> None:
     """Callers can register a Copilot agent handler with a different model."""
     recorded = install_fake_copilot(monkeypatch, content="done")
-    executor = make_default_executor()
+    executor = TaskExecutor()
     executor.register(TaskType.AGENT, make_copilot_agent_handler(model="agent-custom"))
     task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
 
@@ -919,7 +918,7 @@ def test_copilot_agent_handler_sdk_error_marks_task_failed(
 ) -> None:
     """Copilot agent SDK errors follow normal task failure handling."""
     install_fake_copilot(monkeypatch, error=RuntimeError("agent boom"))
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Agent", payload="hello", type=TaskType.AGENT)
 
     with pytest.raises(RuntimeError, match="agent boom"):
@@ -931,7 +930,7 @@ def test_copilot_agent_handler_sdk_error_marks_task_failed(
 
 def test_cancel_stops_in_flight_bash_task() -> None:
     """Cancelling a running bash task terminates its subprocess."""
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = Task(title="Long running", payload="sleep 30", type=TaskType.BASH)
     errors: list[BaseException] = []
 
@@ -976,7 +975,7 @@ def test_task_result_is_none_before_execution() -> None:
 def test_successful_execute_sets_task_result() -> None:
     """A task that completes successfully carries its TaskResult on the task."""
     task = Task(title="X", payload="echo hi", type=TaskType.BASH)
-    executor = make_default_executor()
+    executor = TaskExecutor()
     returned = executor.execute(task)
 
     assert task.result is returned
@@ -988,7 +987,7 @@ def test_successful_execute_sets_task_result() -> None:
 def test_failed_execute_sets_task_result_with_failed_status() -> None:
     """A task that fails still produces a TaskResult attached to the task."""
     task = Task(title="X", payload="exit 1", type=TaskType.BASH)
-    executor = make_default_executor()
+    executor = TaskExecutor()
 
     before = datetime.now()
     with pytest.raises(RuntimeError):
@@ -1005,7 +1004,7 @@ def test_failed_execute_sets_task_result_with_failed_status() -> None:
 def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
     """A task cancelled mid-run still produces a TaskResult on the task."""
     task = Task(title="X", payload="sleep 5", type=TaskType.BASH)
-    executor = make_default_executor()
+    executor = TaskExecutor()
     errors: list[BaseException] = []
 
     def run() -> None:
@@ -1042,7 +1041,7 @@ def test_cancelled_execute_sets_task_result_with_cancelled_status() -> None:
 def test_retry_after_failure_replaces_task_result() -> None:
     """Re-running a failed task overwrites task.result, doesn't keep the old one."""
     task = Task(title="X", payload="exit 1", type=TaskType.BASH)
-    executor = make_default_executor()
+    executor = TaskExecutor()
 
     with pytest.raises(RuntimeError):
         executor.execute(task)
@@ -1072,7 +1071,7 @@ def test_executor_without_store_does_not_record_persistence() -> None:
     """When no store is configured the executor never touches persistence."""
     from ttasks.store import InMemoryStore  # noqa: F401  (import keeps API alive)
 
-    executor = make_default_executor()
+    executor = TaskExecutor()
     task = _bash_task()
     executor.execute(task)
     assert executor.store is None
@@ -1113,7 +1112,7 @@ def test_executor_auto_persists_each_lifecycle_transition() -> None:
         def graphs(self):
             return self._inner.graphs
 
-    executor = make_default_executor(store=_RecordingStore(store))
+    executor = TaskExecutor(store=_RecordingStore(store))
     task = _bash_task()
     executor.execute(task)
 
@@ -1127,7 +1126,7 @@ def test_executor_saves_before_emitting_lifecycle_event() -> None:
     from ttasks.store import InMemoryStore
 
     store = InMemoryStore()
-    executor = make_default_executor(store=store)
+    executor = TaskExecutor(store=store)
     observed: list[TaskStatus] = []
 
     def on_event(event: TaskEvent) -> None:
@@ -1160,7 +1159,7 @@ def test_persistence_failure_is_recorded_and_emitted_not_raised() -> None:
             return None
 
     events: list[TaskEvent] = []
-    executor = make_default_executor(store=_BrokenStore())
+    executor = TaskExecutor(store=_BrokenStore())
     executor.events.subscribe(events.append)
 
     task = _bash_task()
@@ -1174,3 +1173,42 @@ def test_persistence_failure_is_recorded_and_emitted_not_raised() -> None:
     assert any(
         event.type == TaskEventType.PERSISTENCE_FAILED for event in events
     )
+
+
+def test_default_executor_pre_registers_all_task_types() -> None:
+    """TaskExecutor() pre-registers BASH, POWERSHELL, PROMPT, and AGENT."""
+    executor = TaskExecutor()
+
+    assert executor.is_registered(TaskType.BASH)
+    assert executor.is_registered(TaskType.POWERSHELL)
+    assert executor.is_registered(TaskType.PROMPT)
+    assert executor.is_registered(TaskType.AGENT)
+
+
+def test_empty_executor_has_no_handlers_registered() -> None:
+    """TaskExecutor.empty() returns an executor with no handlers."""
+    executor = TaskExecutor.empty()
+
+    assert not executor.is_registered(TaskType.BASH)
+    assert not executor.is_registered(TaskType.POWERSHELL)
+    assert not executor.is_registered(TaskType.PROMPT)
+    assert not executor.is_registered(TaskType.AGENT)
+
+
+def test_empty_executor_forwards_store_for_auto_persist() -> None:
+    """TaskExecutor.empty(store=...) still attaches the store for auto-persist."""
+    from ttasks.store import InMemoryStore
+
+    store = InMemoryStore()
+    executor = TaskExecutor.empty(store=store)
+
+    assert executor.store is store
+
+
+def test_is_registered_rejects_non_task_type() -> None:
+    """is_registered validates its argument is a TaskType."""
+    executor = TaskExecutor.empty()
+    bogus: Any = "bash"
+
+    with pytest.raises(TypeError, match="task_type must be a TaskType"):
+        executor.is_registered(bogus)

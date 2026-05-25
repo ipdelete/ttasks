@@ -14,7 +14,6 @@ from .executor import (
     TaskTimeoutError,
     make_copilot_agent_handler,
     make_copilot_prompt_handler,
-    make_default_executor,
 )
 from .store import (
     GraphCollection,
@@ -49,5 +48,4 @@ __all__ = [
     "TaskType",
     "make_copilot_agent_handler",
     "make_copilot_prompt_handler",
-    "make_default_executor",
 ]

@@ -147,13 +147,27 @@ class TaskExecutor:
     :attr:`TaskEventType.PERSISTENCE_FAILED` events.
     """
 
-    def __init__(self, store: Store | None = None):
-        """Create an executor optionally backed by ``store`` for auto-persist."""
+    def __init__(self, store: Store | None = None, *, _register_defaults: bool = True):
+        """Create an executor optionally backed by ``store`` for auto-persist.
+
+        Built-in BASH, POWERSHELL, PROMPT, and AGENT handlers are registered
+        automatically. Use :meth:`empty` to construct an executor without them.
+        """
         self._handlers: dict[TaskType, TaskHandler] = {}
         self._running_processes: dict[str, subprocess.Popen[str]] = {}
         self.events = EventBus()
         self.store = store
         self.persistence_errors: list[tuple[str, BaseException]] = []
+        if _register_defaults:
+            self.register(TaskType.BASH, self._run_bash)
+            self.register(TaskType.POWERSHELL, self._run_powershell)
+            self.register(TaskType.PROMPT, make_copilot_prompt_handler())
+            self.register(TaskType.AGENT, make_copilot_agent_handler())
+
+    @classmethod
+    def empty(cls, store: Store | None = None) -> TaskExecutor:
+        """Construct an executor with no handlers pre-registered."""
+        return cls(store=store, _register_defaults=False)
 
     def register(self, task_type: TaskType, handler: TaskHandler) -> None:
         """Register callable handler as the executor for task_type."""
@@ -162,6 +176,12 @@ class TaskExecutor:
         if not callable(handler):
             raise TypeError("handler must be callable")
         self._handlers[task_type] = handler
+
+    def is_registered(self, task_type: TaskType) -> bool:
+        """Return whether a handler is registered for ``task_type``."""
+        if not isinstance(task_type, TaskType):
+            raise TypeError("task_type must be a TaskType")
+        return task_type in self._handlers
 
     def is_running(self, task_id: str) -> bool:
         """Return whether task_id currently has a live subprocess."""
@@ -529,17 +549,3 @@ async def _run_copilot_text(
     return response.data.content or ""
 
 
-def make_default_executor(store: Store | None = None) -> TaskExecutor:
-    """Build a fresh :class:`TaskExecutor` with the built-in handlers registered.
-
-    Returns a new instance on every call; not a cached singleton. Each
-    returned executor has BASH, POWERSHELL, PROMPT, and AGENT handlers
-    pre-registered. Pass ``store`` to enable auto-persistence on every
-    lifecycle transition.
-    """
-    executor = TaskExecutor(store=store)
-    executor.register(TaskType.BASH, executor._run_bash)
-    executor.register(TaskType.POWERSHELL, executor._run_powershell)
-    executor.register(TaskType.PROMPT, make_copilot_prompt_handler())
-    executor.register(TaskType.AGENT, make_copilot_agent_handler())
-    return executor

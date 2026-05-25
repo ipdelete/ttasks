@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ttasks.executor import TaskExecutor, make_default_executor
+from ttasks.executor import TaskExecutor
 from ttasks.task import Task, TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
 
@@ -176,7 +176,7 @@ def test_run_rejects_non_positive_max_workers() -> None:
     graph = TaskGraph()
 
     with pytest.raises(ValueError, match="max_workers must be greater than 0"):
-        graph.run(make_default_executor(), max_workers=0)
+        graph.run(TaskExecutor(), max_workers=0)
 
 
 def test_run_raises_on_unregistered_dep() -> None:
@@ -186,7 +186,7 @@ def test_run_raises_on_unregistered_dep() -> None:
     graph = TaskGraph()
     graph[b] = [a]  # a never registered
     with pytest.raises(ValueError, match="depends on unregistered"):
-        graph.run(make_default_executor())
+        graph.run(TaskExecutor())
 
 
 def test_run_raises_on_self_loop() -> None:
@@ -195,7 +195,7 @@ def test_run_raises_on_self_loop() -> None:
     graph = TaskGraph()
     graph[a] = [a]
     with pytest.raises(ValueError, match="cycle"):
-        graph.run(make_default_executor())
+        graph.run(TaskExecutor())
 
 
 def test_run_raises_on_two_node_cycle() -> None:
@@ -206,7 +206,7 @@ def test_run_raises_on_two_node_cycle() -> None:
     graph[a] = [b]
     graph[b] = [a]
     with pytest.raises(ValueError, match="cycle"):
-        graph.run(make_default_executor())
+        graph.run(TaskExecutor())
 
 
 def test_run_raises_on_larger_cycle() -> None:
@@ -219,7 +219,7 @@ def test_run_raises_on_larger_cycle() -> None:
     graph[b] = [a]
     graph[c] = [b]
     with pytest.raises(ValueError, match="cycle"):
-        graph.run(make_default_executor())
+        graph.run(TaskExecutor())
 
 
 # ---- Execution ---------------------------------------------------------------
@@ -283,7 +283,7 @@ def test_graph_passes_only_direct_upstream_task_refs() -> None:
 def test_empty_graph_runs_without_hanging() -> None:
     """An empty graph completes immediately without deadlocking."""
     graph = TaskGraph()
-    assert graph.run(make_default_executor()) is graph
+    assert graph.run(TaskExecutor()) is graph
     assert graph.ok
 
 
@@ -292,7 +292,7 @@ def test_single_node_runs() -> None:
     a = _bash("A", "echo hello")
     graph = TaskGraph()
     graph[a] = []
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert a.status == TaskStatus.DONE
     assert a.result is not None
     assert a.result.output.strip() == "hello"
@@ -307,7 +307,7 @@ def test_linear_chain_runs_in_order() -> None:
     graph[a] = []
     graph[b] = [a]
     graph[c] = [b]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.ok
     for task in (a, b, c):
         assert task.status == TaskStatus.DONE
@@ -325,7 +325,7 @@ def test_diamond_runs_with_parallelism() -> None:
     graph[c] = [a]
     graph[d] = [b, c]
     start = time.monotonic()
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     elapsed = time.monotonic() - start
     # Serial would be ~1.2s; diamond parallel is ~0.9s. Allow generous slack.
     assert elapsed < 1.15, f"diamond took {elapsed:.2f}s — looks serial"
@@ -341,7 +341,7 @@ def test_graph_records_executor_errors() -> None:
     graph = TaskGraph()
     graph[a] = []
 
-    graph.run(TaskExecutor())
+    graph.run(TaskExecutor.empty())
 
     assert a.id in graph.errors
     assert isinstance(graph.errors[a.id], ValueError)
@@ -360,7 +360,7 @@ def test_executor_error_blocks_descendants() -> None:
     graph[a] = []
     graph[b] = [a]
 
-    graph.run(TaskExecutor())
+    graph.run(TaskExecutor.empty())
 
     assert a.id in graph.errors
     assert graph.blocked == [b]
@@ -377,7 +377,7 @@ def test_failure_blocks_descendants() -> None:
     graph[a] = []
     graph[b] = [a]
     graph[c] = [b]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert a.status == TaskStatus.FAILED
     assert graph.failed == [a]
     assert {t.id for t in graph.blocked} == {b.id, c.id}
@@ -394,7 +394,7 @@ def test_failure_does_not_affect_independent_branch() -> None:
     graph[a] = []
     graph[b] = []
     graph[c] = [b]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.failed == [a]
     assert {t.id for t in graph.succeeded} == {b.id, c.id}
     assert graph.blocked == []
@@ -411,7 +411,7 @@ def test_failure_in_diamond_blocks_only_downstream() -> None:
     graph[b] = [a]
     graph[c] = [a]
     graph[d] = [b, c]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.failed == [a]
     assert {t.id for t in graph.blocked} == {b.id, c.id, d.id}
 
@@ -424,7 +424,7 @@ def test_failure_terminates_run_without_hanging() -> None:
     graph[a] = []
     graph[b] = [a]
     start = time.monotonic()
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     elapsed = time.monotonic() - start
     # Should finish almost immediately; allow for executor overhead.
     assert elapsed < 2.0, f"run hung for {elapsed:.2f}s after failure"
@@ -535,7 +535,7 @@ def test_graph_tasks_carry_results_after_run() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     for task in graph:
         assert task.result is not None
@@ -550,7 +550,7 @@ def test_blocked_task_has_no_result_after_run() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     assert a.result is not None
     assert a.result.status == TaskStatus.FAILED
@@ -566,13 +566,13 @@ def test_run_returns_self() -> None:
     a = _bash("A", "echo a")
     graph = TaskGraph()
     graph[a] = []
-    assert graph.run(make_default_executor()) is graph
+    assert graph.run(TaskExecutor()) is graph
 
 
 def test_run_returns_self_for_empty_graph() -> None:
     """Empty graph still returns self (not None, not {})."""
     graph = TaskGraph()
-    assert graph.run(make_default_executor()) is graph
+    assert graph.run(TaskExecutor()) is graph
 
 
 # ---- status views: succeeded / failed / blocked / ok -------------------------
@@ -585,7 +585,7 @@ def test_succeeded_lists_done_tasks_in_graph() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert {t.id for t in graph.succeeded} == {a.id, b.id}
 
 
@@ -605,8 +605,8 @@ def test_succeeded_only_lists_graph_tasks_not_other_graphs() -> None:
     g2 = TaskGraph()
     g1[a] = []
     g2[b] = []
-    g1.run(make_default_executor())
-    g2.run(make_default_executor())
+    g1.run(TaskExecutor())
+    g2.run(TaskExecutor())
     assert g1.succeeded == [a]
     assert g2.succeeded == [b]
 
@@ -618,7 +618,7 @@ def test_cancelled_lists_cancelled_tasks() -> None:
     graph = TaskGraph()
     graph[a] = []
 
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     assert graph.cancelled == [a]
     assert graph.blocked == [a]
@@ -630,7 +630,7 @@ def test_failed_lists_failed_tasks() -> None:
     a = _bash("A", "exit 1")
     graph = TaskGraph()
     graph[a] = []
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.failed == [a]
 
 
@@ -639,7 +639,7 @@ def test_failed_empty_when_all_succeed() -> None:
     a = _bash("A", "echo a")
     graph = TaskGraph()
     graph[a] = []
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.failed == []
 
 
@@ -652,7 +652,7 @@ def test_blocked_lists_skipped_descendants() -> None:
     graph[a] = []
     graph[b] = [a]
     graph[c] = [b]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert {t.id for t in graph.blocked} == {b.id, c.id}
 
 
@@ -671,7 +671,7 @@ def test_blocked_empty_when_no_failures() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.blocked == []
 
 
@@ -682,10 +682,10 @@ def test_blocked_resets_at_start_of_run() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert b in graph.blocked
 
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     # The point: blocked is a function of the most recent run, not
     # accumulated across runs.
@@ -700,8 +700,8 @@ def test_clean_graph_can_be_run_again_without_blocking_done_dependencies() -> No
     graph[a] = []
     graph[b] = [a]
 
-    graph.run(make_default_executor())
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
+    graph.run(TaskExecutor())
 
     assert graph.ok
     assert graph.blocked == []
@@ -716,10 +716,10 @@ def test_done_dependency_allows_pending_descendant_to_run() -> None:
     b = _bash("B", "echo b")
     graph = TaskGraph()
     graph[a] = []
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     assert graph.ok
     assert graph.blocked == []
@@ -733,7 +733,7 @@ def test_cancelled_root_is_blocked_instead_of_hanging() -> None:
     graph = TaskGraph()
     graph[a] = []
 
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
 
     assert graph.blocked == [a]
     assert not graph.ok
@@ -746,7 +746,7 @@ def test_ok_true_after_clean_run() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.ok
 
 
@@ -755,7 +755,7 @@ def test_ok_false_after_failure() -> None:
     a = _bash("A", "exit 1")
     graph = TaskGraph()
     graph[a] = []
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert not graph.ok
 
 
@@ -766,7 +766,7 @@ def test_ok_false_when_tasks_blocked() -> None:
     graph = TaskGraph()
     graph[a] = []
     graph[b] = [a]
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert not graph.ok
 
 
@@ -781,7 +781,7 @@ def test_ok_false_before_run() -> None:
 def test_ok_true_for_empty_graph() -> None:
     """Vacuously: no tasks, nothing to fail."""
     graph = TaskGraph()
-    graph.run(make_default_executor())
+    graph.run(TaskExecutor())
     assert graph.ok
 
 

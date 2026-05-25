@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ttasks.executor import make_default_executor
+from ttasks.executor import TaskExecutor
 from ttasks.storage.sqlite import SQLiteStore
 from ttasks.task import Task, TaskResult, TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
@@ -235,7 +235,7 @@ class TestSQLiteStoreUnderTaskGraphRun:
             graph[leaf] = [root]
         store.graphs.save(graph)
 
-        executor = make_default_executor(store=store)
+        executor = TaskExecutor(store=store)
         graph.run(executor, max_workers=4)
 
         assert graph.ok
