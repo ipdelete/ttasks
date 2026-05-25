@@ -116,6 +116,16 @@ class TestSQLiteTaskCollection:
         SQLiteStore(store_path).tasks.save(task)
         assert SQLiteStore(store_path).tasks[task.id].title == task.title
 
+    def test_memory_store_reuses_schema_across_operations(self) -> None:
+        """SQLiteStore(':memory:') works across the collection's connections."""
+        store = SQLiteStore(":memory:")
+        task = _bash("Memory", "echo memory")
+
+        store.tasks.save(task)
+
+        assert len(store.tasks) == 1
+        assert store.tasks[task.id].title == "Memory"
+
     def test_delitem_missing_task_raises_key_error(self, store: SQLiteStore) -> None:
         with pytest.raises(KeyError):
             del store.tasks["missing"]
