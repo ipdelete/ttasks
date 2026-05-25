@@ -282,6 +282,21 @@ class TaskExecutor:
             return datetime.now(), time.monotonic() - started_monotonic
 
         context = TaskContext(task, upstream=upstream)
+
+        def finalize(status: TaskStatus, **extras: Any) -> TaskResult:
+            """Build, attach, and return the terminal TaskResult for ``task``."""
+            finished_at = datetime.now()
+            result = TaskResult(
+                task_id=task.id,
+                status=status,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration=time.monotonic() - started_monotonic,
+                **extras,
+            )
+            task.result = result
+            return result
+
         try:
             raw_result = handler(context)
             context.raise_if_cancelled()
@@ -301,61 +316,32 @@ class TaskExecutor:
         except TaskCancelled as e:
             if task.status != TaskStatus.CANCELLED:
                 task.cancel()
-            finished_at, duration = result_timing()
-            task.result = TaskResult(
-                task_id=task.id,
-                status=TaskStatus.CANCELLED,
-                started_at=started_at,
-                finished_at=finished_at,
-                duration=duration,
-                error=str(e),
-            )
+            finalize(TaskStatus.CANCELLED, error=str(e))
             self._emit(task, TaskEventType.CANCELLED, TaskStatus.RUNNING, str(e))
             raise
         except Exception as e:
             if task.status == TaskStatus.CANCELLED:
                 cancelled = TaskCancelled(f"Task {task.id!r} was cancelled")
-                finished_at, duration = result_timing()
-                task.result = TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.CANCELLED,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    duration=duration,
-                    error=str(e),
-                )
+                finalize(TaskStatus.CANCELLED, error=str(e))
                 self._emit(task, TaskEventType.CANCELLED, TaskStatus.RUNNING, str(e))
                 raise cancelled from e
             task.transition_to(TaskStatus.FAILED, error=str(e))
             if isinstance(e, TaskExecutionError | TaskTimeoutError):
                 completed = e.completed
-                error = str(e)
                 if isinstance(e, TaskExecutionError):
-                    error = completed.stderr or error
-                finished_at, duration = result_timing()
-                task.result = TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.FAILED,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    duration=duration,
+                    error = completed.stderr or str(e)
+                else:
+                    error = str(e)
+                finalize(
+                    TaskStatus.FAILED,
                     output=completed.stdout or "",
                     error=error,
                     returncode=completed.returncode,
                     raw=completed,
                 )
-                self._emit(task, TaskEventType.FAILED, TaskStatus.RUNNING, str(e))
             else:
-                finished_at, duration = result_timing()
-                task.result = TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.FAILED,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    duration=duration,
-                    error=str(e),
-                )
-                self._emit(task, TaskEventType.FAILED, TaskStatus.RUNNING, str(e))
+                finalize(TaskStatus.FAILED, error=str(e))
+            self._emit(task, TaskEventType.FAILED, TaskStatus.RUNNING, str(e))
             raise
 
     def _run_command(
