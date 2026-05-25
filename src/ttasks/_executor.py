@@ -330,9 +330,15 @@ class TaskExecutor:
         if not task.can_transition_to(TaskStatus.RUNNING):
             raise ValueError(f"Cannot execute task with status {task.status.value!r}")
 
+        previous_status = task.status
         handler = self._handlers.get(task.type)
         if handler is None:
             message = f"No handler registered for task type {task.type.value!r}"
+            failed_previous = previous_status
+            if previous_status != TaskStatus.PENDING:
+                task.transition_to(TaskStatus.RUNNING)
+                self._emit(task, TaskEventType.STARTED, previous_status)
+                failed_previous = TaskStatus.RUNNING
             finished_at = datetime.now()
             failed_result = TaskResult(
                 task_id=task.id,
@@ -347,13 +353,12 @@ class TaskExecutor:
                 task,
                 failed_result,
                 TaskStatus.FAILED,
-                previous=TaskStatus.PENDING,
+                previous=failed_previous,
                 event_type=TaskEventType.FAILED,
                 error=message,
             )
             raise ValueError(message)
 
-        previous_status = task.status
         task.transition_to(TaskStatus.RUNNING)
         self._emit(task, TaskEventType.STARTED, previous_status)
         started_at = datetime.now()

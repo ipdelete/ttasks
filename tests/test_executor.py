@@ -256,6 +256,32 @@ def test_execute_terminalizes_task_without_registered_handler() -> None:
     assert events[0].previous_status == TaskStatus.PENDING
 
 
+def test_execute_retry_from_blocked_without_registered_handler_fails_cleanly() -> None:
+    """A retry-eligible BLOCKED task with no handler fails with the handler error."""
+    executor = TaskExecutor.empty()
+    task = Task.bash("", title="Example")
+    task.transition_to(TaskStatus.BLOCKED)
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(ValueError, match="No handler registered for task type 'bash'"):
+        executor.execute(task)
+
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "No handler registered for task type 'bash'"
+    assert task.result is not None
+    assert task.result.status == TaskStatus.FAILED
+    assert task.result.termination_reason == "handler"
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.FAILED,
+    ]
+    assert [event.previous_status for event in events] == [
+        TaskStatus.BLOCKED,
+        TaskStatus.RUNNING,
+    ]
+
+
 def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
     """Cancelled tasks are rejected before any handler side effects occur."""
     executor = TaskExecutor()
