@@ -20,6 +20,27 @@ class TaskStatus(Enum):
     CANCELLED = "cancelled"
     BLOCKED = "blocked"
 
+    @property
+    def is_sink(self) -> bool:
+        """No outgoing transitions in the SM (SUCCEEDED, CANCELLED).
+
+        Drift-guarded by a test that compares this set to
+        ``_ALLOWED_TRANSITIONS``. The scheduler uses this to identify
+        statuses it must never retry; ``executor.cancel`` uses it as
+        the boundary past which cancellation is a no-op.
+        """
+        return self in {TaskStatus.SUCCEEDED, TaskStatus.CANCELLED}
+
+    @property
+    def is_bad(self) -> bool:
+        """An upstream parent in this state blocks ready descendants."""
+        return self in {TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.BLOCKED}
+
+    @property
+    def is_active(self) -> bool:
+        """Task may still progress within the current run without intervention."""
+        return self in {TaskStatus.PENDING, TaskStatus.RUNNING}
+
 
 class TaskType(Enum):
     """Kinds of work the executor can dispatch to handlers."""

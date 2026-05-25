@@ -276,16 +276,11 @@ class TaskGraph:
         futures: dict[str, Future] = {}
         lock = RLock()
         done = Event()
-        # Holds an exception raised by the scheduler itself (deadlock detection
-        # etc.) so it can surface from run() instead of swallowing in a
-        # Future callback thread. Single-slot to keep the contract simple.
+        # ``scheduler_error`` is the single-slot escape hatch for surfacing
+        # exceptions raised inside ThreadPoolExecutor callbacks (e.g., the
+        # no-progress guard) so they propagate out of run() instead of being
+        # silently swallowed in a callback thread.
         scheduler_error: list[BaseException] = []
-
-        bad_statuses = {
-            TaskStatus.FAILED,
-            TaskStatus.CANCELLED,
-            TaskStatus.BLOCKED,
-        }
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
 
@@ -317,7 +312,7 @@ class TaskGraph:
                 to FAILED before raising, so status alone is authoritative.
                 """
                 for d in self._deps[tid]:
-                    if self._tasks[d].status in bad_statuses:
+                    if self._tasks[d].status.is_bad:
                         return d
                 return None
 
@@ -352,14 +347,12 @@ class TaskGraph:
                         if tid in futures:
                             continue
                         # SUCCEEDED/CANCELLED are absolute terminal states
-                        # for the run. BLOCKED tasks that entered this run
-                        # blocked are eligible for retry (carryover); BLOCKED
-                        # tasks that became blocked during this run stay
-                        # blocked so finally readiness is unambiguous.
-                        if task.status in {
-                            TaskStatus.SUCCEEDED,
-                            TaskStatus.CANCELLED,
-                        }:
+                        # SUCCEEDED and CANCELLED are absolute SM sinks:
+                        # never retry-eligible. BLOCKED tasks that entered
+                        # this run blocked are eligible for retry (carryover);
+                        # BLOCKED tasks that became blocked during this run
+                        # stay blocked so finally readiness is unambiguous.
+                        if task.status.is_sink:
                             continue
                         if (
                             task.status == TaskStatus.BLOCKED

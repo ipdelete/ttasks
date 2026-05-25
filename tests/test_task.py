@@ -449,3 +449,90 @@ class TestRunningEntryResetsCarryover:
         task.transition_to(TaskStatus.RUNNING)
 
         assert task.blocked_by is None
+
+
+# ---- TaskStatus enum predicates (step sm-1) ---------------------------------
+
+
+class TestTaskStatusPredicates:
+    """TaskStatus carries its own predicates so callsites don't dup set literals."""
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            (TaskStatus.PENDING, False),
+            (TaskStatus.RUNNING, False),
+            (TaskStatus.SUCCEEDED, True),
+            (TaskStatus.FAILED, False),
+            (TaskStatus.CANCELLED, True),
+            (TaskStatus.BLOCKED, False),
+        ],
+    )
+    def test_is_sink_truth_table(
+        self, status: TaskStatus, expected: bool
+    ) -> None:
+        """is_sink: states with no outgoing transitions in the SM."""
+        assert status.is_sink is expected
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            (TaskStatus.PENDING, False),
+            (TaskStatus.RUNNING, False),
+            (TaskStatus.SUCCEEDED, False),
+            (TaskStatus.FAILED, True),
+            (TaskStatus.CANCELLED, True),
+            (TaskStatus.BLOCKED, True),
+        ],
+    )
+    def test_is_bad_truth_table(
+        self, status: TaskStatus, expected: bool
+    ) -> None:
+        """is_bad: an upstream parent in this state blocks ready descendants."""
+        assert status.is_bad is expected
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            (TaskStatus.PENDING, True),
+            (TaskStatus.RUNNING, True),
+            (TaskStatus.SUCCEEDED, False),
+            (TaskStatus.FAILED, False),
+            (TaskStatus.CANCELLED, False),
+            (TaskStatus.BLOCKED, False),
+        ],
+    )
+    def test_is_active_truth_table(
+        self, status: TaskStatus, expected: bool
+    ) -> None:
+        """is_active: task may still progress without intervention."""
+        assert status.is_active is expected
+
+    def test_is_sink_matches_allowed_transitions(self) -> None:
+        """is_sink must agree with the canonical _ALLOWED_TRANSITIONS table.
+
+        This is the drift guard: if a future change adds an outgoing edge
+        from a sink state (or removes one from a non-sink state), this
+        test catches it before the predicate goes out of sync.
+        """
+        from ttasks._task import _ALLOWED_TRANSITIONS
+
+        for status in TaskStatus:
+            assert status.is_sink == (_ALLOWED_TRANSITIONS[status] == set()), (
+                f"is_sink/_ALLOWED_TRANSITIONS disagree for {status}"
+            )
+
+    def test_active_and_sink_are_disjoint(self) -> None:
+        """A status cannot be both able-to-progress and unable-to-move."""
+        for status in TaskStatus:
+            assert not (status.is_active and status.is_sink)
+
+    def test_active_and_bad_are_disjoint(self) -> None:
+        """A status cannot be both able-to-progress and blocking-descendants."""
+        for status in TaskStatus:
+            assert not (status.is_active and status.is_bad)
+
+    def test_predicates_cover_all_statuses(self) -> None:
+        """Every status falls under is_active, is_bad, or is_sink."""
+        for status in TaskStatus:
+            assert status.is_active or status.is_bad or status.is_sink

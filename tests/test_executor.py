@@ -368,6 +368,66 @@ def test_cancel_pending_task_persists_to_store() -> None:
     store.tasks.save.assert_called_once_with(task)
 
 
+def test_cancel_succeeded_task_is_silent_noop() -> None:
+    """Cancelling a SUCCEEDED task is a silent no-op (no raise, no emit, no save).
+
+    SUCCEEDED is an irreversible sink: callers shouldn't need to know which
+    states accept transitions, and a successful run must not be retroactively
+    rewritten as CANCELLED.
+    """
+    store = Mock()
+    store.tasks = Mock()
+    executor = TaskExecutor(store=store)
+    task = Task.bash("echo hi", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+    succeeded_result = TaskResult(
+        task_id=task.id,
+        status=TaskStatus.SUCCEEDED,
+        started_at=datetime.now(),
+        finished_at=datetime.now(),
+        duration=0.0,
+    )
+    task.transition_to(TaskStatus.SUCCEEDED)
+    object.__setattr__(task, "_result", succeeded_result)
+    store.tasks.save.reset_mock()
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    executor.cancel(task)
+
+    cancelled = [e for e in events if e.type == TaskEventType.CANCELLED]
+    assert cancelled == []
+    store.tasks.save.assert_not_called()
+    assert task.status == TaskStatus.SUCCEEDED
+    assert task.result is succeeded_result
+    assert task.result.status == TaskStatus.SUCCEEDED
+
+
+def test_cancel_already_cancelled_with_live_process_still_terminates() -> None:
+    """Already-CANCELLED task with a lingering subprocess still gets the process reaped.
+
+    State idempotence on Task must not skip OS-level cleanup: the subprocess
+    may still be alive even after the Task state flipped to CANCELLED.
+    """
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.CANCELLED)
+    process = Mock(spec=subprocess.Popen)
+    process.poll.return_value = None
+    executor._running_processes[task.id] = process
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    with patch.object(executor, "_terminate_process") as terminate:
+        executor.cancel(task)
+        terminate.assert_called_once_with(process)
+
+    cancelled = [e for e in events if e.type == TaskEventType.CANCELLED]
+    assert cancelled == []
+    assert task.status == TaskStatus.CANCELLED
+
+
 def test_cancel_idempotent_does_not_double_emit() -> None:
     """Repeated cancel() calls only emit one CANCELLED event."""
     executor = TaskExecutor()

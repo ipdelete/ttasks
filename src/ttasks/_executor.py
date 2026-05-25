@@ -262,15 +262,21 @@ class TaskExecutor:
     def cancel(self, task: Task) -> None:
         """Cancel a task and terminate its subprocess if one is active.
 
-        For tasks that were not actively executing (PENDING / FAILED /
-        BLOCKED) this emits a CANCELLED event and attaches a CANCELLED
-        ``TaskResult`` so observers and the store see the outcome.
+        SUCCEEDED is an irreversible sink: cancel() is a silent no-op rather
+        than raising, so callers don't need to know which states accept
+        transitions. For tasks that were not actively executing (PENDING /
+        FAILED / BLOCKED) this emits a CANCELLED event and attaches a
+        CANCELLED ``TaskResult`` so observers and the store see the outcome.
         Cancelling a RUNNING task does **not** emit here: the active
         ``execute()`` loop owns the terminal event for that task and
         will emit CANCELLED when its handler unwinds via
         :class:`TaskCancelled`. Cancelling an already-CANCELLED task is
-        a no-op so duplicate requests stay harmless.
+        a no-op on Task state but still reaps any lingering subprocess
+        so duplicate requests stay harmless yet complete.
         """
+        if task.status == TaskStatus.SUCCEEDED:
+            return
+
         previous = task.status
         task.cancel()
 
