@@ -5,13 +5,11 @@ The public surface is intentionally flat. Submodules
 remain importable for callers who prefer explicit paths.
 """
 
+from ._exceptions import TaskCancelled, TaskExecutionError, TaskTimeoutError
 from .events import EventBus, TaskEvent, TaskEventType
 from .executor import (
-    TaskCancelled,
     TaskContext,
-    TaskExecutionError,
     TaskExecutor,
-    TaskTimeoutError,
     make_copilot_agent_handler,
     make_copilot_prompt_handler,
 )
