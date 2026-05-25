@@ -13,10 +13,12 @@ from ttasks import executor as executor_mod
 from ttasks import store as store_mod
 from ttasks import task as task_mod
 from ttasks import workflow as workflow_mod
+from ttasks.storage import sqlite as sqlite_mod
 
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
     "InMemoryStore",
+    "SQLiteStore",
     "Store",
     "Task",
     "TaskCancelled",
@@ -50,6 +52,7 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     """Top-level re-exports point at the canonical submodule objects."""
     assert ttasks.EventBus is events_mod.EventBus
     assert ttasks.InMemoryStore is store_mod.InMemoryStore
+    assert ttasks.SQLiteStore is sqlite_mod.SQLiteStore
     assert ttasks.Store is store_mod.Store
     assert ttasks.Task is task_mod.Task
     assert ttasks.TaskStatus is task_mod.TaskStatus
