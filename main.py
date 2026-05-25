@@ -81,10 +81,10 @@ def main() -> None:
         "in one concise sentence.",
     )
     alpha = TaskGraph(title="alpha")
-    alpha[x] = []
-    alpha[y] = [x]
-    alpha[z] = [y]
-    store.graphs[alpha.id] = alpha
+    alpha.add(x)
+    alpha.add(y, after=[x])
+    alpha.add(z, after=[y])
+    store.graphs.save(alpha)
 
     # Graph beta: P -> {Q, R, S} (fan-out; S is a no-tools prompt task).
     p = _bash("P", "echo p")
@@ -95,19 +95,19 @@ def main() -> None:
         "Reply with exactly this text and no punctuation: ttasks prompt ok",
     )
     beta = TaskGraph(title="beta")
-    beta[p] = []
-    beta[q] = [p]
-    beta[r] = [p]
-    beta[s] = [p]
-    store.graphs[beta.id] = beta
+    beta.add(p)
+    beta.add(q, after=[p])
+    beta.add(r, after=[p])
+    beta.add(s, after=[p])
+    store.graphs.save(beta)
 
     # Graph gamma: F fails, G is blocked. Demonstrates the blocked view.
     f = _bash("F", "exit 1")
     g = _bash("G", "echo g")
     gamma = TaskGraph(title="gamma")
-    gamma[f] = []
-    gamma[g] = [f]
-    store.graphs[gamma.id] = gamma
+    gamma.add(f)
+    gamma.add(g, after=[f])
+    store.graphs.save(gamma)
 
     # run() returns the graph itself, so calls are chainable.
     start = time.monotonic()

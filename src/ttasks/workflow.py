@@ -48,14 +48,50 @@ class TaskGraph:
 
     # ---- mapping protocol ---------------------------------------------------
 
-    def __setitem__(self, task: Task, deps: Iterable[Task]) -> None:
-        """Register ``task`` in the graph and record its upstream dependencies."""
+    def add(
+        self,
+        task: Task,
+        *,
+        after: Iterable[Task] = (),
+        finally_: bool = False,
+        required: bool = True,
+    ) -> None:
+        """Register ``task`` in the graph.
+
+        ``after`` lists upstream tasks that must complete before ``task`` runs.
+        ``finally_=True`` registers a finally task: it becomes ready once every
+        listed upstream task is no longer active, regardless of success.
+        ``required=False`` is only meaningful with ``finally_=True`` and marks
+        the task as optional so its failure does not make :attr:`ok` false.
+        """
         if not isinstance(task, Task):
             raise TypeError(f"Expected Task, got {type(task).__name__}")
+        if not isinstance(finally_, bool):
+            raise TypeError("finally_ must be a bool")
+        if not isinstance(required, bool):
+            raise TypeError("required must be a bool")
+        if not required and not finally_:
+            raise ValueError("required=False is only valid with finally_=True")
+
         self._tasks[task.id] = task
-        self._deps[task.id] = [d.id for d in deps]
-        self._finally.discard(task.id)
-        self._optional.discard(task.id)
+        self._deps[task.id] = [d.id for d in after]
+        if finally_:
+            self._finally.add(task.id)
+            if required:
+                self._optional.discard(task.id)
+            else:
+                self._optional.add(task.id)
+        else:
+            self._finally.discard(task.id)
+            self._optional.discard(task.id)
+
+    def __setitem__(self, task: Task, deps: Iterable[Task]) -> None:
+        """Register ``task`` in the graph and record its upstream dependencies.
+
+        Protocol-level alternative to :meth:`add` for callers using mapping
+        syntax. Prefer :meth:`add` in new code.
+        """
+        self.add(task, after=deps)
 
     def add_finally(
         self,
@@ -64,25 +100,8 @@ class TaskGraph:
         *,
         required: bool = True,
     ) -> None:
-        """Register a task that runs after ``after`` tasks are no longer active.
-
-        Unlike normal graph dependencies, ``after`` tasks do not need to
-        succeed. The finally task becomes ready once every listed task has
-        succeeded, failed, been cancelled, been blocked, or raised an executor
-        error. If ``required`` is false, failures from this task are visible in
-        graph views but do not make :attr:`ok` false.
-        """
-        if not isinstance(required, bool):
-            raise TypeError("required must be a bool")
-        if not isinstance(task, Task):
-            raise TypeError(f"Expected Task, got {type(task).__name__}")
-        self._tasks[task.id] = task
-        self._deps[task.id] = [d.id for d in after]
-        self._finally.add(task.id)
-        if required:
-            self._optional.discard(task.id)
-        else:
-            self._optional.add(task.id)
+        """Register a finally task. Prefer :meth:`add` with ``finally_=True``."""
+        self.add(task, after=after, finally_=True, required=required)
 
     def __getitem__(self, task: Task) -> list[Task]:
         """Return the upstream :class:`Task` objects ``task`` depends on."""

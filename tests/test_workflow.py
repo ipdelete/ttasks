@@ -845,3 +845,106 @@ def test_diamond_roots_and_leaves() -> None:
     graph[d] = [b, c]
     assert graph.roots() == [a]
     assert graph.leaves() == [d]
+
+
+# ---- graph.add() ------------------------------------------------------------
+
+
+def test_add_with_no_deps_registers_task() -> None:
+    """graph.add(task) registers a task with no upstream dependencies."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+
+    graph.add(a)
+
+    assert a in graph
+    assert graph.dependencies(a) == []
+    assert not graph.is_finally(a)
+    assert not graph.is_optional(a)
+
+
+def test_add_with_after_records_upstream_deps() -> None:
+    """graph.add(task, after=[...]) records the upstream task list."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    c = _bash("C", "echo c")
+    graph = TaskGraph()
+    graph.add(a)
+    graph.add(b)
+
+    graph.add(c, after=[a, b])
+
+    assert graph.dependencies(c) == [a, b]
+
+
+def test_add_after_accepts_arbitrary_iterables() -> None:
+    """The after parameter accepts any iterable, including generators."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph.add(a)
+
+    graph.add(b, after=(t for t in [a]))
+
+    assert graph.dependencies(b) == [a]
+
+
+def test_add_finally_marks_task_as_finally_required_by_default() -> None:
+    """finally_=True without required= keeps the task required."""
+    a = _bash("A", "echo a")
+    cleanup = _bash("C", "echo c")
+    graph = TaskGraph()
+    graph.add(a)
+
+    graph.add(cleanup, after=[a], finally_=True)
+
+    assert graph.is_finally(cleanup)
+    assert not graph.is_optional(cleanup)
+
+
+def test_add_finally_optional_marks_task_as_optional() -> None:
+    """finally_=True with required=False marks the task optional."""
+    a = _bash("A", "echo a")
+    cleanup = _bash("C", "echo c")
+    graph = TaskGraph()
+    graph.add(a)
+
+    graph.add(cleanup, after=[a], finally_=True, required=False)
+
+    assert graph.is_finally(cleanup)
+    assert graph.is_optional(cleanup)
+
+
+def test_add_required_false_without_finally_raises() -> None:
+    """required=False is only meaningful with finally_=True."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+
+    msg = "required=False is only valid with finally_=True"
+    with pytest.raises(ValueError, match=msg):
+        graph.add(a, required=False)
+
+
+def test_add_runs_like_setitem_form() -> None:
+    """A graph built with .add() executes to the same end state as the mapping form."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph.add(a)
+    graph.add(b, after=[a])
+
+    graph.run(TaskExecutor())
+
+    assert graph.ok
+    assert graph.succeeded == [a, b]
+
+
+def test_setitem_still_works_for_mapping_compatibility() -> None:
+    """__setitem__ remains available for protocol completeness."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+
+    assert graph.dependencies(b) == [a]

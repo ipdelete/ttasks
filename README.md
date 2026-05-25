@@ -103,7 +103,7 @@ store.tasks.save(task)
 assert store.tasks[task.id] is task
 
 graph = TaskGraph(title="build")
-graph[task] = []
+graph.add(task)
 store.graphs.save(graph)
 assert graph in store.graphs
 ```
@@ -134,8 +134,8 @@ build = Task.bash("echo build", title="build")
 test  = Task.bash("echo test",  title="test")
 
 graph = TaskGraph(title="build pipeline")
-graph[build] = []
-graph[test] = [build]
+graph.add(build)
+graph.add(test, after=[build])
 
 # Atomic: graph metadata + edges + member task snapshots in one transaction.
 store.graphs.save(graph)
@@ -411,9 +411,9 @@ test = Task.bash("echo test", title="Test")
 package = Task.bash("echo package", title="Package")
 
 graph = TaskGraph(title="build pipeline")
-graph[build] = []
-graph[test] = [build]
-graph[package] = [test]
+graph.add(build)
+graph.add(test, after=[build])
+graph.add(package, after=[test])
 
 graph.run(TaskExecutor())
 
@@ -453,8 +453,9 @@ that ancestor as an explicit graph dependency.
 
 ### Finally tasks
 
-Use `add_finally()` for reporting or cleanup tasks that should run after other
-tasks are no longer active, even when those tasks failed or were blocked:
+Use `graph.add(..., finally_=True)` for reporting or cleanup tasks that should
+run after other tasks are no longer active, even when those tasks failed or
+were blocked:
 
 ```python
 recommend = Task.prompt(
@@ -462,9 +463,10 @@ recommend = Task.prompt(
     title="Recommend next action",
 )
 
-graph.add_finally(
+graph.add(
     recommend,
     after=[lint, test, docs],
+    finally_=True,
     required=False,
 )
 ```
