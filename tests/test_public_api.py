@@ -10,22 +10,26 @@ vice versa), this test fails.
 import ttasks
 from ttasks import events as events_mod
 from ttasks import executor as executor_mod
-from ttasks import ledger as ledger_mod
+from ttasks import store as store_mod
 from ttasks import task as task_mod
 from ttasks import workflow as workflow_mod
 
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
-    "InMemoryGraphLedger",
+    "GraphCollection",
+    "InMemoryGraphCollection",
+    "InMemoryStore",
+    "InMemoryTaskCollection",
+    "Store",
     "Task",
     "TaskCancelled",
+    "TaskCollection",
     "TaskContext",
     "TaskExecutionError",
     "TaskEvent",
     "TaskEventType",
     "TaskExecutor",
     "TaskGraph",
-    "InMemoryTaskLedger",
     "TaskResult",
     "TaskTimeoutError",
     "TaskStatus",
@@ -50,13 +54,17 @@ def test_every_public_name_is_importable_from_top_level() -> None:
 def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     """Top-level re-exports point at the canonical submodule objects."""
     assert ttasks.EventBus is events_mod.EventBus
-    assert ttasks.InMemoryGraphLedger is ledger_mod.InMemoryGraphLedger
+    assert ttasks.InMemoryStore is store_mod.InMemoryStore
+    assert ttasks.InMemoryTaskCollection is store_mod.InMemoryTaskCollection
+    assert ttasks.InMemoryGraphCollection is store_mod.InMemoryGraphCollection
+    assert ttasks.Store is store_mod.Store
+    assert ttasks.TaskCollection is store_mod.TaskCollection
+    assert ttasks.GraphCollection is store_mod.GraphCollection
     assert ttasks.Task is task_mod.Task
     assert ttasks.TaskStatus is task_mod.TaskStatus
     assert ttasks.TaskType is task_mod.TaskType
     assert ttasks.TaskResult is task_mod.TaskResult
     assert ttasks.TaskTimeoutError is executor_mod.TaskTimeoutError
-    assert ttasks.InMemoryTaskLedger is ledger_mod.InMemoryTaskLedger
     assert ttasks.TaskEvent is events_mod.TaskEvent
     assert ttasks.TaskEventType is events_mod.TaskEventType
     assert ttasks.TaskExecutionError is executor_mod.TaskExecutionError
@@ -73,3 +81,4 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     )
     assert ttasks.make_default_executor is executor_mod.make_default_executor
     assert ttasks.TaskGraph is workflow_mod.TaskGraph
+

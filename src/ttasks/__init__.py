@@ -1,7 +1,7 @@
 """ttasks — a small task runner with DAG support.
 
 The public surface is intentionally flat. Submodules
-(``ttasks.task``, ``ttasks.executor``, ``ttasks.ledger``, ``ttasks.workflow``)
+(``ttasks.task``, ``ttasks.executor``, ``ttasks.store``, ``ttasks.workflow``)
 remain importable for callers who prefer explicit paths.
 """
 
@@ -16,22 +16,33 @@ from .executor import (
     make_copilot_prompt_handler,
     make_default_executor,
 )
-from .ledger import InMemoryGraphLedger, InMemoryTaskLedger
+from .store import (
+    GraphCollection,
+    InMemoryGraphCollection,
+    InMemoryStore,
+    InMemoryTaskCollection,
+    Store,
+    TaskCollection,
+)
 from .task import Task, TaskResult, TaskStatus, TaskType
 from .workflow import TaskGraph
 
 __all__ = [
     "EventBus",
-    "InMemoryGraphLedger",
+    "GraphCollection",
+    "InMemoryGraphCollection",
+    "InMemoryStore",
+    "InMemoryTaskCollection",
+    "Store",
     "Task",
     "TaskCancelled",
+    "TaskCollection",
     "TaskContext",
     "TaskExecutionError",
     "TaskEvent",
     "TaskEventType",
     "TaskExecutor",
     "TaskGraph",
-    "InMemoryTaskLedger",
     "TaskResult",
     "TaskTimeoutError",
     "TaskStatus",

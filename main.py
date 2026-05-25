@@ -1,12 +1,15 @@
-r"""Executable demo: one shared ledger, two DAGs, graph-level views.
+r"""Executable demo: one shared store, three DAGs, graph-level views.
 
-Two graphs share a ledger but each has its own view of run state. The
-graph itself answers post-run questions (ok? succeeded? failed?
+The executor is wired to a :class:`SQLiteStore`, so every task is durably
+persisted on each lifecycle transition without any event-subscriber
+plumbing. Graphs are persisted explicitly with ``store.graphs[g.id] = g``.
+
+The graph itself answers post-run questions (ok? succeeded? failed?
 blocked?) and topology questions (roots, leaves) without forcing the
-caller to manage Futures or do set-differences against the ledger.
+caller to manage Futures.
 
 This file is a smoke test of the public API surface from a consumer's
-point of view: every name imported below comes from `ttasks`, the
+point of view: every name imported below comes from ``ttasks``, the
 flat re-export surface, not from submodules.
 """
 
@@ -14,7 +17,7 @@ import time
 from pathlib import Path
 
 from ttasks import Task, TaskEvent, TaskGraph, TaskType, make_default_executor
-from ttasks.storage.sqlite import SQLiteGraphLedger, SQLiteTaskLedger
+from ttasks.storage.sqlite import SQLiteStore
 
 
 def _bash(title: str, payload: str) -> Task:
@@ -60,14 +63,14 @@ def _print_event(event: TaskEvent) -> None:
 
 
 def main() -> None:
-    """Build two DAGs against a shared ledger and inspect them via the graph."""
-    ledger_path = Path("ttasks-demo.db")
-    ledger_path.unlink(missing_ok=True)
-    ledger = SQLiteTaskLedger(ledger_path)
-    graphs = SQLiteGraphLedger(ledger_path, tasks=ledger)
-    executor = make_default_executor()
+    """Build three DAGs against a shared SQLite store and inspect them."""
+    store_path = Path("ttasks-demo.db")
+    store_path.unlink(missing_ok=True)
+    store = SQLiteStore(store_path)
+
+    # The executor auto-persists every task transition to store.tasks.
+    executor = make_default_executor(store=store)
     unsubscribe_print = executor.events.subscribe(_print_event)
-    unsubscribe_save = executor.events.subscribe(lambda event: ledger.save(event.task))
 
     # Graph alpha: X -> Y -> Z (linear; Z is a tool-capable agent task).
     x = _bash("X", "echo x")
@@ -77,11 +80,11 @@ def main() -> None:
         "Read README.md in the current directory and summarize the project "
         "in one concise sentence.",
     )
-    alpha = TaskGraph(ledger=ledger, title="alpha")
+    alpha = TaskGraph(title="alpha")
     alpha[x] = []
     alpha[y] = [x]
     alpha[z] = [y]
-    graphs[alpha.id] = alpha
+    store.graphs[alpha.id] = alpha
 
     # Graph beta: P -> {Q, R, S} (fan-out; S is a no-tools prompt task).
     p = _bash("P", "echo p")
@@ -91,20 +94,20 @@ def main() -> None:
         "S",
         "Reply with exactly this text and no punctuation: ttasks prompt ok",
     )
-    beta = TaskGraph(ledger=ledger, title="beta")
+    beta = TaskGraph(title="beta")
     beta[p] = []
     beta[q] = [p]
     beta[r] = [p]
     beta[s] = [p]
-    graphs[beta.id] = beta
+    store.graphs[beta.id] = beta
 
     # Graph gamma: F fails, G is blocked. Demonstrates the blocked view.
     f = _bash("F", "exit 1")
     g = _bash("G", "echo g")
-    gamma = TaskGraph(ledger=ledger, title="gamma")
+    gamma = TaskGraph(title="gamma")
     gamma[f] = []
     gamma[g] = [f]
-    graphs[gamma.id] = gamma
+    store.graphs[gamma.id] = gamma
 
     # run() returns the graph itself, so calls are chainable.
     start = time.monotonic()
@@ -114,15 +117,15 @@ def main() -> None:
         gamma.run(executor)
     finally:
         unsubscribe_print()
-        unsubscribe_save()
     elapsed = time.monotonic() - start
 
     for graph in [alpha, beta, gamma]:
         _print_graph(graph)
 
-    # The shared ledger is the union: every task across every graph.
-    print(f"\n  shared ledger holds {len(ledger)} tasks "
-          f"across {len(graphs)} graphs")
+    print(f"\n  store holds {len(store.tasks)} tasks "
+          f"across {len(store.graphs)} graphs")
+    if executor.persistence_errors:
+        print(f"  persistence errors: {len(executor.persistence_errors)}")
     print(f"\nwall time: {elapsed:.2f}s")
 
 

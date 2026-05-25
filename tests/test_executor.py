@@ -1058,3 +1058,119 @@ def test_retry_after_failure_replaces_task_result() -> None:
     assert task.result is not first_result
     assert task.result.status == TaskStatus.DONE
     assert task.result.output.strip() == "recovered"
+
+
+# ---- store-backed auto-persistence ------------------------------------------
+
+
+def _bash_task(payload: str = "echo ok") -> Task:
+    """Return a fresh bash task used by the auto-persist tests."""
+    return Task(title="t", type=TaskType.BASH, payload=payload)
+
+
+def test_executor_without_store_does_not_record_persistence() -> None:
+    """When no store is configured the executor never touches persistence."""
+    from ttasks.store import InMemoryStore  # noqa: F401  (import keeps API alive)
+
+    executor = make_default_executor()
+    task = _bash_task()
+    executor.execute(task)
+    assert executor.store is None
+    assert executor.persistence_errors == []
+
+
+def test_executor_auto_persists_each_lifecycle_transition() -> None:
+    """Both STARTED and SUCCEEDED transitions write the task to the store."""
+    from ttasks.store import InMemoryStore
+
+    store = InMemoryStore()
+
+    saved_statuses: list[TaskStatus] = []
+
+    class _RecordingTasks:
+        """Tasks collection that records the status at each save call."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def save(self, task):
+            saved_statuses.append(task.status)
+            self._inner.save(task)
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    class _RecordingStore:
+        def __init__(self, inner):
+            self._inner = inner
+            self._tasks = _RecordingTasks(inner.tasks)
+
+        @property
+        def tasks(self):
+            return self._tasks
+
+        @property
+        def graphs(self):
+            return self._inner.graphs
+
+    executor = make_default_executor(store=_RecordingStore(store))
+    task = _bash_task()
+    executor.execute(task)
+
+    assert TaskStatus.RUNNING in saved_statuses
+    assert TaskStatus.DONE in saved_statuses
+    assert store.tasks[task.id].status == TaskStatus.DONE
+
+
+def test_executor_saves_before_emitting_lifecycle_event() -> None:
+    """Subscribers reading the store on event see the new task state."""
+    from ttasks.store import InMemoryStore
+
+    store = InMemoryStore()
+    executor = make_default_executor(store=store)
+    observed: list[TaskStatus] = []
+
+    def on_event(event: TaskEvent) -> None:
+        snapshot = store.tasks.get(event.task_id)
+        if snapshot is not None:
+            observed.append(snapshot.status)
+
+    executor.events.subscribe(on_event)
+    task = _bash_task()
+    executor.execute(task)
+
+    assert TaskStatus.RUNNING in observed
+    assert TaskStatus.DONE in observed
+
+
+def test_persistence_failure_is_recorded_and_emitted_not_raised() -> None:
+    """A store that raises on save records an error and emits PERSISTENCE_FAILED."""
+
+    class _BrokenTasks:
+        def save(self, task):
+            raise RuntimeError("disk full")
+
+    class _BrokenStore:
+        @property
+        def tasks(self):
+            return _BrokenTasks()
+
+        @property
+        def graphs(self):
+            return None
+
+    events: list[TaskEvent] = []
+    executor = make_default_executor(store=_BrokenStore())
+    executor.events.subscribe(events.append)
+
+    task = _bash_task()
+    result = executor.execute(task)
+
+    assert result.status == TaskStatus.DONE
+    assert task.status == TaskStatus.DONE
+    # Persistence errors did not poison execution but were recorded.
+    assert executor.persistence_errors
+    assert all(tid == task.id for tid, _ in executor.persistence_errors)
+    assert any(
+        event.type == TaskEventType.PERSISTENCE_FAILED for event in events
+    )

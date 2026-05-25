@@ -18,6 +18,7 @@ class TaskEventType(Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PERSISTENCE_FAILED = "persistence_failed"
 
 
 @dataclass(frozen=True)

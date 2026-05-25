@@ -1,5 +1,7 @@
 """Task execution and process-management helpers."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 import signal
@@ -9,10 +11,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .events import EventBus, TaskEvent, TaskEventType
 from .task import Task, TaskResult, TaskStatus, TaskType
+
+if TYPE_CHECKING:
+    from .store import Store
 
 
 class TaskCancelled(RuntimeError):
@@ -131,13 +136,24 @@ TaskHandler = Callable[[TaskContext], Any]
 
 
 class TaskExecutor:
-    """Dispatch tasks to registered handlers and manage task state transitions."""
+    """Dispatch tasks to registered handlers and manage task state transitions.
 
-    def __init__(self):
-        """Create an executor with no handlers and no running subprocesses."""
+    When constructed with ``store``, the executor auto-persists each task to
+    ``store.tasks`` on every lifecycle transition (RUNNING, DONE, FAILED,
+    CANCELLED). Persistence runs *before* the corresponding lifecycle event is
+    emitted so subscribers can read a consistent store. Persistence failures
+    do not propagate as task failures; instead they are recorded on
+    :attr:`persistence_errors` and emitted as
+    :attr:`TaskEventType.PERSISTENCE_FAILED` events.
+    """
+
+    def __init__(self, store: Store | None = None):
+        """Create an executor optionally backed by ``store`` for auto-persist."""
         self._handlers: dict[TaskType, TaskHandler] = {}
         self._running_processes: dict[str, subprocess.Popen[str]] = {}
         self.events = EventBus()
+        self.store = store
+        self.persistence_errors: list[tuple[str, BaseException]] = []
 
     def register(self, task_type: TaskType, handler: TaskHandler) -> None:
         """Register callable handler as the executor for task_type."""
@@ -159,7 +175,8 @@ class TaskExecutor:
         previous_status: TaskStatus | None,
         error: str | None = None,
     ) -> None:
-        """Emit a task event for task's current status."""
+        """Persist ``task`` if a store is configured, then emit a lifecycle event."""
+        self._persist(task)
         self.events.emit(
             TaskEvent(
                 type=event_type,
@@ -171,6 +188,30 @@ class TaskExecutor:
                 error=error,
             )
         )
+
+    def _persist(self, task: Task) -> None:
+        """Auto-save ``task`` to the configured store.
+
+        Failures are recorded on :attr:`persistence_errors` and emitted as
+        ``PERSISTENCE_FAILED`` events; they never propagate to the caller.
+        """
+        if self.store is None:
+            return
+        try:
+            self.store.tasks.save(task)
+        except BaseException as error:
+            self.persistence_errors.append((task.id, error))
+            self.events.emit(
+                TaskEvent(
+                    type=TaskEventType.PERSISTENCE_FAILED,
+                    task_id=task.id,
+                    task=task,
+                    timestamp=datetime.now(),
+                    previous_status=None,
+                    status=task.status,
+                    error=str(error),
+                )
+            )
 
     def cancel(self, task: Task) -> None:
         """Cancel a task and terminate its subprocess if one is active."""
@@ -488,19 +529,15 @@ async def _run_copilot_text(
     return response.data.content or ""
 
 
-def make_default_executor() -> TaskExecutor:
-    """Build a fresh TaskExecutor with the built-in handlers registered.
+def make_default_executor(store: Store | None = None) -> TaskExecutor:
+    """Build a fresh :class:`TaskExecutor` with the built-in handlers registered.
 
     Returns a new instance on every call; not a cached singleton. Each
     returned executor has BASH, POWERSHELL, PROMPT, and AGENT handlers
-    pre-registered. The PROMPT handler uses the GitHub Copilot SDK for a
-    no-tools single-turn text prompt. The AGENT handler uses the SDK for a
-    tool-capable single-turn instruction with permission requests approved.
-
-    To customize, call ``.register()`` on the returned instance — the
-    customization is local to that executor, not to the package.
+    pre-registered. Pass ``store`` to enable auto-persistence on every
+    lifecycle transition.
     """
-    executor = TaskExecutor()
+    executor = TaskExecutor(store=store)
     executor.register(TaskType.BASH, executor._run_bash)
     executor.register(TaskType.POWERSHELL, executor._run_powershell)
     executor.register(TaskType.PROMPT, make_copilot_prompt_handler())

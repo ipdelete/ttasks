@@ -2,9 +2,9 @@
 
 A small Python task ledger, executor, and DAG workflow library.
 
-`ttasks` models work as `Task` objects, stores them in an in-memory
-`InMemoryTaskLedger`, executes them through a configurable `TaskExecutor`, and can run
-simple dependency graphs with `TaskGraph`.
+`ttasks` models work as `Task` objects, executes them through a configurable
+`TaskExecutor`, persists them through an optional `Store`, and runs simple
+dependency graphs with `TaskGraph`.
 
 ## Requirements
 
@@ -79,93 +79,95 @@ measured with a monotonic clock and reported in seconds.
 For subprocess tasks, `TaskResult.raw` is the underlying
 `subprocess.CompletedProcess`.
 
-### InMemoryTaskLedger
+### Store
 
-`InMemoryTaskLedger` is a small dictionary-like in-memory registry keyed by task ID.
+A `Store` is the single seam between live runtime objects (`Task`,
+`TaskGraph`) and any durable backend. It exposes two `MutableMapping`-style
+collections keyed by the object's own immutable ID:
 
-```python
-from ttasks import InMemoryTaskLedger
+- `store.tasks` — task storage
+- `store.graphs` — graph storage
 
-ledger = InMemoryTaskLedger()
-ledger[task.id] = task
-
-assert ledger[task.id] is task
-```
-
-The ledger enforces that tasks are stored under their own immutable IDs.
-
-### SQLiteTaskLedger
-
-Use `SQLiteTaskLedger` when task snapshots should survive process restart.
-It has the same dictionary-like save/load shape as `InMemoryTaskLedger`, but
-stores snapshots in a SQLite database file.
+`InMemoryStore` keeps live references; reads return the same objects you
+saved:
 
 ```python
-from ttasks.storage.sqlite import SQLiteTaskLedger
+from ttasks import InMemoryStore, Task, TaskType, TaskGraph
 
-ledger = SQLiteTaskLedger("ttasks.db")
-ledger[task.id] = task  # saves immediately
+store = InMemoryStore()
+task = Task(title="hello", payload="echo hi", type=TaskType.BASH)
+store.tasks.save(task)            # alias for store.tasks[task.id] = task
+assert store.tasks[task.id] is task
 
-restored = ledger[task.id]
-
-assert restored.id == task.id
-assert restored is not task
-```
-
-`ledger.save(task)` is an explicit alias for `ledger[task.id] = task`.
-Loaded tasks are detached snapshots: mutating a task after saving does not
-write through automatically, so assign it again or call `save()` after later
-changes. `TaskResult.raw` is intentionally not persisted because raw handler
-objects are not generally serializable.
-
-### InMemoryGraphLedger
-
-`InMemoryGraphLedger` is the graph-level companion to `InMemoryTaskLedger`. It stores
-`TaskGraph` objects under their own immutable graph IDs.
-
-```python
-from ttasks import InMemoryGraphLedger, TaskGraph
-
-graphs = InMemoryGraphLedger()
 graph = TaskGraph(title="build")
-graphs[graph.id] = graph
-
-assert graphs[graph.id] is graph
+graph[task] = []
+store.graphs[graph.id] = graph
+assert graph in store.graphs
 ```
 
-`TaskGraph` also records display metadata:
+The collections enforce that objects are stored under their own immutable
+IDs. `task in store.tasks` and `graph in store.graphs` are id-membership
+shortcuts.
 
-- `graph.id`
-- `graph.title`
-- `graph.created_at`
+### SQLiteStore
 
-### SQLiteGraphLedger
-
-Use `SQLiteGraphLedger` to persist graph metadata, task membership, dependency
-edges, and finally-task metadata. It shares a SQLite database with
-`SQLiteTaskLedger` and saves graph member tasks when a graph is saved.
+`SQLiteStore` is the durable backend with the same surface as
+`InMemoryStore`. A single SQLite file holds both tasks and graphs.
 
 ```python
-from ttasks.storage.sqlite import SQLiteGraphLedger, SQLiteTaskLedger
+from ttasks import Task, TaskGraph, TaskType, make_default_executor
+from ttasks.storage.sqlite import SQLiteStore
 
-tasks = SQLiteTaskLedger("ttasks.db")
-graphs = SQLiteGraphLedger("ttasks.db", tasks=tasks)
+store = SQLiteStore("ttasks.db")
 
-graph = TaskGraph(ledger=tasks, title="build")
+build = Task(title="build", payload="echo build", type=TaskType.BASH)
+test  = Task(title="test",  payload="echo test",  type=TaskType.BASH)
+
+graph = TaskGraph(title="build pipeline")
 graph[build] = []
 graph[test] = [build]
 
-graphs[graph.id] = graph  # saves immediately
-restored = graphs[graph.id]
+# Atomic: graph metadata + edges + member task snapshots in one transaction.
+store.graphs[graph.id] = graph
 
-assert restored.id == graph.id
+executor = make_default_executor(store=store)
+graph.run(executor)               # tasks auto-persist on each transition
+
+restored = SQLiteStore("ttasks.db").tasks[build.id]
+assert restored.status.value == "done"
 ```
 
-`graphs.save(graph)` is an explicit alias for `graphs[graph.id] = graph`.
-Deleting a graph removes graph metadata and edges but leaves shared tasks in the
-task ledger. Run-scoped views such as `graph.blocked` and `graph.errors` are not
-persisted yet; task terminal states and results are restored through the task
-ledger.
+Reads return detached snapshots: mutating a loaded object does not write
+through, so call `save()` again after later changes. `TaskResult.raw` is
+intentionally not persisted because raw handler objects are not generally
+serializable.
+
+Deleting a graph removes graph metadata and edges but leaves member tasks in
+the task collection so other graphs can still reach them. Graphs are stored
+topology-only; run-scoped views such as `graph.blocked` and `graph.errors`
+are not persisted, but each task's terminal status and `TaskResult` are
+restored through `store.tasks`.
+
+### Auto-persistence
+
+When `TaskExecutor` is constructed with a `store`, it auto-saves the task to
+`store.tasks` on every lifecycle transition (`RUNNING`, `DONE`, `FAILED`,
+`CANCELLED`). Saves run *before* the corresponding lifecycle event is emitted,
+so subscribers reading the store see a consistent view.
+
+Persistence failures are isolated from execution: they are recorded on
+`executor.persistence_errors` and emitted as
+`TaskEventType.PERSISTENCE_FAILED` events. A failing save does not propagate
+out of `execute()` and does not transition the task to `FAILED`.
+
+```python
+from ttasks import make_default_executor
+from ttasks.storage.sqlite import SQLiteStore
+
+store = SQLiteStore("ttasks.db")
+executor = make_default_executor(store=store)
+# Every task executed through this executor is durably persisted automatically.
+```
 
 ### TaskExecutor
 
@@ -301,7 +303,7 @@ assert [event.type for event in seen] == [
 
 Events include:
 
-- `type`: `STARTED`, `SUCCEEDED`, `FAILED`, or `CANCELLED`
+- `type`: `STARTED`, `SUCCEEDED`, `FAILED`, `CANCELLED`, or `PERSISTENCE_FAILED`
 - `task_id`
 - `task`: the live task object
 - `previous_status`
@@ -390,18 +392,16 @@ the transition to `CANCELLED` and records the terminal `TaskResult`.
 registered in the graph before `run()`.
 
 ```python
-from ttasks import InMemoryGraphLedger, TaskGraph, Task, TaskType, make_default_executor
+from ttasks import TaskGraph, Task, TaskType, make_default_executor
 
 build = Task(title="Build", payload="echo build", type=TaskType.BASH)
 test = Task(title="Test", payload="echo test", type=TaskType.BASH)
 package = Task(title="Package", payload="echo package", type=TaskType.BASH)
 
-graphs = InMemoryGraphLedger()
 graph = TaskGraph(title="build pipeline")
 graph[build] = []
 graph[test] = [build]
 graph[package] = [test]
-graphs[graph.id] = graph
 
 graph.run(make_default_executor())
 
@@ -427,7 +427,7 @@ Already-`DONE` tasks count as satisfied dependencies, so a graph can be rerun or
 extended after partial completion.
 
 When a graph submits a task, its handler receives direct dependency task refs in
-`context.upstream`. The refs come from the graph ledger and are keyed by task ID:
+`context.upstream`. The refs come from the graph itself and are keyed by task ID:
 
 ```python
 def handler(context):

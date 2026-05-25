@@ -1,9 +1,8 @@
-"""TaskGraph: a DAG runner that composes a task ledger + TaskExecutor.
+"""TaskGraph: a DAG of Tasks executed on a ThreadPoolExecutor.
 
-This module is a *consumer* of the SDK, not part of it. The DAG lives in
-TaskGraph; the tasks themselves live in a task ledger; execution goes
-through a TaskExecutor on a ThreadPoolExecutor. Nothing about Task,
-InMemoryTaskLedger, or TaskExecutor needs to change to support DAGs.
+The graph owns its own task references and dependency edges; it does not
+delegate task storage to a separate ledger. Persistence is the job of
+``ttasks.store.Store`` (consulted via ``TaskExecutor`` for auto-save).
 """
 
 import uuid
@@ -13,31 +12,27 @@ from datetime import datetime
 from threading import Event, RLock
 
 from .executor import TaskExecutor
-from .ledger import InMemoryTaskLedger, TaskLedgerProtocol
 from .task import Task, TaskStatus
 
 
 class TaskGraph:
-    """A directed acyclic graph of Tasks.
+    """A directed acyclic graph of :class:`Task` objects.
 
-    Tasks are stored in an associated in-memory task ledger; the edges
-    (dependencies) are stored on the graph. The two are kept in sync:
-    assigning a task to the graph registers it in the ledger.
+    Tasks and edges are stored on the graph itself. ``graph.run(executor)``
+    submits ready tasks to a thread pool; if the executor was constructed
+    with a ``store``, every lifecycle transition is auto-persisted there.
     """
 
-    def __init__(
-        self,
-        ledger: TaskLedgerProtocol | None = None,
-        *,
-        title: str = "",
-    ) -> None:
-        """Create a graph backed by ledger, or by a fresh InMemoryTaskLedger."""
+    def __init__(self, *, title: str = "") -> None:
+        """Create a graph with display ``title``."""
         if not isinstance(title, str):
             raise TypeError("title must be a str")
         self._id = str(uuid.uuid4())
         self.title = title
         self.created_at = datetime.now()
-        self._ledger = ledger if ledger is not None else InMemoryTaskLedger()
+        # task_id -> Task; insertion order preserved for stable iteration.
+        self._tasks: dict[str, Task] = {}
+        # task_id -> list of upstream task_ids.
         self._deps: dict[str, list[str]] = {}
         # Tasks skipped during the most recent run() because an upstream task
         # failed/cancelled or because the task itself could not be submitted.
@@ -54,8 +49,10 @@ class TaskGraph:
     # ---- mapping protocol ---------------------------------------------------
 
     def __setitem__(self, task: Task, deps: Iterable[Task]) -> None:
-        """Register `task` in the ledger and record its upstream dependencies."""
-        self._ledger[task.id] = task
+        """Register ``task`` in the graph and record its upstream dependencies."""
+        if not isinstance(task, Task):
+            raise TypeError(f"Expected Task, got {type(task).__name__}")
+        self._tasks[task.id] = task
         self._deps[task.id] = [d.id for d in deps]
         self._finally.discard(task.id)
         self._optional.discard(task.id)
@@ -67,7 +64,7 @@ class TaskGraph:
         *,
         required: bool = True,
     ) -> None:
-        """Register a task that runs after dependencies are no longer active.
+        """Register a task that runs after ``after`` tasks are no longer active.
 
         Unlike normal graph dependencies, ``after`` tasks do not need to
         succeed. The finally task becomes ready once every listed task has
@@ -77,7 +74,9 @@ class TaskGraph:
         """
         if not isinstance(required, bool):
             raise TypeError("required must be a bool")
-        self._ledger[task.id] = task
+        if not isinstance(task, Task):
+            raise TypeError(f"Expected Task, got {type(task).__name__}")
+        self._tasks[task.id] = task
         self._deps[task.id] = [d.id for d in after]
         self._finally.add(task.id)
         if required:
@@ -86,16 +85,16 @@ class TaskGraph:
             self._optional.add(task.id)
 
     def __getitem__(self, task: Task) -> list[Task]:
-        """Return the upstream Task objects that `task` depends on."""
-        return [self._ledger[d] for d in self._deps[task.id]]
+        """Return the upstream :class:`Task` objects ``task`` depends on."""
+        return [self._tasks[d] for d in self._deps[task.id]]
 
     def __contains__(self, task: object) -> bool:
-        """Return whether task is a Task registered in this graph."""
+        """Return whether ``task`` is a Task registered in this graph."""
         return isinstance(task, Task) and task.id in self._deps
 
     def __iter__(self) -> Iterator[Task]:
         """Iterate over graph tasks in insertion order."""
-        return (self._ledger[tid] for tid in self._deps)
+        return (self._tasks[tid] for tid in self._deps)
 
     def __len__(self) -> int:
         """Return the number of tasks registered in this graph."""
@@ -104,23 +103,36 @@ class TaskGraph:
     def __repr__(self) -> str:
         """Return a concise representation including dependency edges."""
         edges = ", ".join(
-            f"{self._ledger[d].title}->{self._ledger[t].title}"
+            f"{self._tasks[d].title}->{self._tasks[t].title}"
             for t, ds in self._deps.items()
             for d in ds
         )
         return f"TaskGraph({len(self)} tasks, edges=[{edges}])"
 
-    # ---- accessors ----------------------------------------------------------
+    # ---- public introspection (used by persistence backends) ---------------
 
     @property
     def id(self) -> str:
         """Return the immutable graph identity."""
         return self._id
 
-    @property
-    def ledger(self) -> TaskLedgerProtocol:
-        """The task ledger backing this graph."""
-        return self._ledger
+    def dependencies(self, task: Task) -> list[Task]:
+        """Return the direct upstream tasks of ``task``."""
+        return [self._tasks[d] for d in self._deps[task.id]]
+
+    def is_finally(self, task: Task) -> bool:
+        """Return whether ``task`` was registered via :meth:`add_finally`."""
+        return task.id in self._finally
+
+    def is_optional(self, task: Task) -> bool:
+        """Return whether ``task`` is a finally task with ``required=False``."""
+        return task.id in self._optional
+
+    def items(self) -> Iterator[tuple[Task, list[Task]]]:
+        """Yield ``(task, deps)`` pairs in insertion order."""
+        for tid in self._deps:
+            task = self._tasks[tid]
+            yield task, [self._tasks[d] for d in self._deps[tid]]
 
     # ---- status views (post-run) --------------------------------------------
 
@@ -141,14 +153,14 @@ class TaskGraph:
 
     @property
     def blocked(self) -> list[Task]:
-        """Tasks skipped during the most recent run().
+        """Tasks skipped during the most recent :meth:`run`.
 
         A task is blocked when an upstream task failed/cancelled, or when the
         task itself could not be submitted because its lifecycle state cannot
         move to RUNNING. Distinct from "PENDING because run() was never called":
-        this list is populated only by run() and reset on each call.
+        this list is populated only by :meth:`run` and reset on each call.
         """
-        return [self._ledger[tid] for tid in self._blocked]
+        return [self._tasks[tid] for tid in self._blocked]
 
     @property
     def errors(self) -> dict[str, BaseException]:
@@ -160,7 +172,7 @@ class TaskGraph:
         """True iff every required task succeeded without run errors."""
         required = [tid for tid in self._deps if tid not in self._optional]
         return (
-            all(self._ledger[tid].status == TaskStatus.DONE for tid in required)
+            all(self._tasks[tid].status == TaskStatus.DONE for tid in required)
             and not any(tid not in self._optional for tid in self._errors)
             and not any(tid not in self._optional for tid in self._blocked)
         )
@@ -169,7 +181,7 @@ class TaskGraph:
 
     def roots(self) -> list[Task]:
         """Tasks with no upstream dependencies."""
-        return [self._ledger[tid] for tid, ds in self._deps.items() if not ds]
+        return [self._tasks[tid] for tid, ds in self._deps.items() if not ds]
 
     def leaves(self) -> list[Task]:
         """Tasks that no other task depends on."""
@@ -177,18 +189,18 @@ class TaskGraph:
         for ds in self._deps.values():
             depended_on.update(ds)
         return [
-            self._ledger[tid] for tid in self._deps if tid not in depended_on
+            self._tasks[tid] for tid in self._deps if tid not in depended_on
         ]
 
     # ---- validation ---------------------------------------------------------
 
     def _validate(self) -> None:
-        """Raise ValueError on missing deps or cycles. Called from run()."""
+        """Raise ValueError on missing deps or cycles. Called from :meth:`run`."""
         for tid, ds in self._deps.items():
             for d in ds:
                 if d not in self._deps:
                     raise ValueError(
-                        f"task {self._ledger[tid].title!r} depends on "
+                        f"task {self._tasks[tid].title!r} depends on "
                         f"unregistered task id {d!r}"
                     )
         # Kahn's algorithm: count visited nodes vs total.
@@ -213,13 +225,13 @@ class TaskGraph:
         executor: TaskExecutor,
         max_workers: int = 4,
     ) -> "TaskGraph":
-        """Execute the DAG. Blocks until done. Returns self for chaining.
+        """Execute the DAG. Blocks until done. Returns ``self`` for chaining.
 
         Failure policy: if a task fails or is cancelled, every descendant is
         marked blocked and never submitted; the run terminates instead of
         hanging. Already-DONE tasks count as satisfied dependencies so a graph
-        can be run again or extended after partial completion. Use graph.failed
-        and graph.blocked to inspect the outcome.
+        can be run again or extended after partial completion. Use
+        :attr:`failed` and :attr:`blocked` to inspect the outcome.
         """
         if max_workers <= 0:
             raise ValueError("max_workers must be greater than 0")
@@ -242,7 +254,7 @@ class TaskGraph:
 
             def succeeded(tid: str) -> bool:
                 """Return whether tid is already done or succeeded in this run."""
-                task = self._ledger[tid]
+                task = self._tasks[tid]
                 if task.status == TaskStatus.DONE:
                     return True
                 return (
@@ -253,7 +265,7 @@ class TaskGraph:
 
             def inactive(tid: str) -> bool:
                 """Return whether tid can no longer change in this run."""
-                task = self._ledger[tid]
+                task = self._tasks[tid]
                 return (
                     task.status in {
                         TaskStatus.DONE,
@@ -276,7 +288,7 @@ class TaskGraph:
                 return any(
                     d in blocked
                     or d in self._errors
-                    or self._ledger[d].status == TaskStatus.CANCELLED
+                    or self._tasks[d].status == TaskStatus.CANCELLED
                     or (
                         d in futures
                         and futures[d].done()
@@ -288,20 +300,20 @@ class TaskGraph:
             def finished(tid: str) -> bool:
                 """Return whether tid no longer needs scheduler attention."""
                 return (
-                    self._ledger[tid].status == TaskStatus.DONE
+                    self._tasks[tid].status == TaskStatus.DONE
                     or tid in blocked
                     or (tid in futures and futures[tid].done())
                 )
 
             def upstream_tasks(tid: str) -> dict[str, Task]:
-                """Return direct upstream task refs for tid from the ledger."""
-                return {dep_id: self._ledger[dep_id] for dep_id in self._deps[tid]}
+                """Return direct upstream task refs for tid from the graph."""
+                return {dep_id: self._tasks[dep_id] for dep_id in self._deps[tid]}
 
             def submit(tid: str) -> None:
                 """Submit tid to the thread pool and register its callback."""
                 fut = pool.submit(
                     executor.execute,
-                    self._ledger[tid],
+                    self._tasks[tid],
                     upstream_tasks(tid),
                 )
                 futures[tid] = fut
@@ -316,7 +328,7 @@ class TaskGraph:
                 while changed:
                     changed = False
                     for tid in self._deps:
-                        task = self._ledger[tid]
+                        task = self._tasks[tid]
                         if (
                             tid in futures
                             or tid in blocked
@@ -333,7 +345,6 @@ class TaskGraph:
                                 blocked.add(tid)
                             changed = True
 
-                # Exit when every task is done, has finished this run, or is blocked.
                 if all(finished(tid) for tid in self._deps):
                     done.set()
 

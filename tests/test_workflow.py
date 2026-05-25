@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from ttasks.executor import TaskExecutor, make_default_executor
-from ttasks.ledger import InMemoryTaskLedger
 from ttasks.task import Task, TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
 
@@ -59,13 +58,13 @@ def test_graph_created_at_defaults_to_now() -> None:
 # ---- Mapping protocol --------------------------------------------------------
 
 
-def test_setitem_registers_task_in_ledger() -> None:
-    """Assigning a task into the graph also registers it in the ledger."""
+def test_setitem_registers_task_in_graph() -> None:
+    """Assigning a task into the graph adds it as a member."""
     a = _bash("A", "echo a")
     graph = TaskGraph()
     graph[a] = []
-    assert a.id in graph.ledger
-    assert graph.ledger[a.id] is a
+    assert a in graph
+    assert list(graph) == [a]
 
 
 def test_getitem_returns_dep_tasks() -> None:
@@ -120,40 +119,53 @@ def test_repr_includes_edges() -> None:
     assert "A->B" in rep
 
 
-# ---- Ledger composition ------------------------------------------------------
+# ---- Public introspection ----------------------------------------------------
 
 
-def test_default_constructor_creates_own_ledger() -> None:
-    """A graph constructed without a ledger gets a fresh empty one."""
-    graph = TaskGraph()
-    assert isinstance(graph.ledger, InMemoryTaskLedger)
-    assert len(graph.ledger) == 0
-
-
-def test_constructor_uses_provided_ledger() -> None:
-    """A ledger passed in is held by identity, not copied."""
-    ledger = InMemoryTaskLedger()
-    graph = TaskGraph(ledger=ledger)
-    assert graph.ledger is ledger
-
-
-def test_constructor_accepts_positional_ledger() -> None:
-    """The existing positional ledger constructor form still works."""
-    ledger = InMemoryTaskLedger()
-    graph = TaskGraph(ledger)
-
-    assert graph.ledger is ledger
-
-
-def test_ledger_can_be_pre_populated() -> None:
-    """Tasks already in the ledger are not in the graph until assigned."""
-    ledger = InMemoryTaskLedger()
+def test_dependencies_returns_direct_upstream_tasks() -> None:
+    """``graph.dependencies(task)`` returns the direct upstream Tasks."""
     a = _bash("A", "echo a")
-    ledger[a.id] = a
-    graph = TaskGraph(ledger=ledger)
-    assert a not in graph
-    assert len(graph) == 0
-    assert a.id in ledger
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    assert graph.dependencies(a) == []
+    assert graph.dependencies(b) == [a]
+
+
+def test_items_yields_task_dep_pairs_in_insertion_order() -> None:
+    """``graph.items()`` yields ``(task, deps)`` pairs in insertion order."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    assert list(graph.items()) == [(a, []), (b, [a])]
+
+
+def test_is_finally_distinguishes_normal_and_finally_tasks() -> None:
+    """``is_finally`` reflects whether the task was added via add_finally."""
+    a = _bash("A", "echo a")
+    report = _bash("Report", "echo report")
+    graph = TaskGraph()
+    graph[a] = []
+    graph.add_finally(report, after=[a])
+    assert not graph.is_finally(a)
+    assert graph.is_finally(report)
+
+
+def test_is_optional_reflects_required_flag_on_finally_tasks() -> None:
+    """``is_optional`` is True only for finally tasks added with required=False."""
+    a = _bash("A", "echo a")
+    optional = _bash("Optional", "echo opt")
+    required = _bash("Required", "echo req")
+    graph = TaskGraph()
+    graph[a] = []
+    graph.add_finally(optional, after=[a], required=False)
+    graph.add_finally(required, after=[a])
+    assert not graph.is_optional(a)
+    assert graph.is_optional(optional)
+    assert not graph.is_optional(required)
 
 
 # ---- Validation --------------------------------------------------------------
@@ -214,7 +226,7 @@ def test_run_raises_on_larger_cycle() -> None:
 
 
 def test_graph_passes_direct_upstream_task_refs() -> None:
-    """Handlers receive direct upstream tasks from the graph ledger."""
+    """Handlers receive direct upstream task refs from the graph."""
     a = _bash("A", "")
     b = _bash("B", "")
     executor = TaskExecutor()
@@ -225,7 +237,6 @@ def test_graph_passes_direct_upstream_task_refs() -> None:
             assert context.upstream == {}
             return "a"
         assert context.upstream[a.id] is a
-        assert context.upstream[a.id] is graph.ledger[a.id]
         assert context.upstream[a.id].result is not None
         return context.upstream[a.id].result.output.upper()
 
@@ -514,11 +525,11 @@ def test_add_finally_rejects_non_bool_required() -> None:
         graph.add_finally(report, after=[], required=required)
 
 
-# ---- ledger as post-run view -------------------------------------------------
+# ---- graph as post-run view -------------------------------------------------
 
 
-def test_ledger_carries_results_after_run() -> None:
-    """After graph.run(), every executed task in the ledger has task.result set."""
+def test_graph_tasks_carry_results_after_run() -> None:
+    """After graph.run(), every executed task in the graph has task.result set."""
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
     graph = TaskGraph()
@@ -526,7 +537,7 @@ def test_ledger_carries_results_after_run() -> None:
     graph[b] = [a]
     graph.run(make_default_executor())
 
-    for task in graph.ledger:
+    for task in graph:
         assert task.result is not None
         assert task.result.status == TaskStatus.DONE
         assert task.result.output.strip() == task.title.lower()
@@ -586,13 +597,12 @@ def test_succeeded_empty_before_run() -> None:
     assert graph.succeeded == []
 
 
-def test_succeeded_only_lists_graph_tasks_not_whole_ledger() -> None:
-    """A task in the shared ledger but not in this graph is not in succeeded."""
-    ledger = InMemoryTaskLedger()
+def test_succeeded_only_lists_graph_tasks_not_other_graphs() -> None:
+    """Two independent graphs do not pollute each other's succeeded view."""
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
-    g1 = TaskGraph(ledger=ledger)
-    g2 = TaskGraph(ledger=ledger)
+    g1 = TaskGraph()
+    g2 = TaskGraph()
     g1[a] = []
     g2[b] = []
     g1.run(make_default_executor())
