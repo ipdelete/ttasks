@@ -875,6 +875,20 @@ def test_add_after_accepts_arbitrary_iterables() -> None:
     assert graph.dependencies(b) == [a]
 
 
+def test_add_deduplicates_repeated_dependencies() -> None:
+    """Repeated upstream tasks are one edge, not a false cycle."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    graph = TaskGraph()
+    graph.add(a)
+
+    graph.add(b, after=[a, a])
+
+    assert graph.dependencies(b) == [a]
+    graph.run(TaskExecutor())
+    assert graph.ok
+
+
 def test_add_finally_marks_task_as_finally_required_by_default() -> None:
     """finally_=True without required= keeps the task required."""
     a = _bash("A", "echo a")

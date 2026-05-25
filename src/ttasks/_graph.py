@@ -70,7 +70,11 @@ class TaskGraph:
             raise ValueError("required=False is only valid with finally_=True")
 
         self._tasks[task.id] = task
-        self._deps[task.id] = [d.id for d in after]
+        deps: list[str] = []
+        for dep in after:
+            if dep.id not in deps:
+                deps.append(dep.id)
+        self._deps[task.id] = deps
         if finally_:
             self._finally.add(task.id)
             if required:
