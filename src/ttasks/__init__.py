@@ -45,9 +45,24 @@ __all__ = [
 # ``ttasks.TaskTimeoutError`` rather than the internal submodule path. This is
 # the same idiom used verbatim by httpx, openai-python, and anthropic-python.
 import contextlib as _contextlib
+import sys as _sys
+import types as _types
 
 _locals = locals()
 for _name in __all__:
     with _contextlib.suppress(TypeError, AttributeError):
         _locals[_name].__module__ = "ttasks"
 del _locals, _name, _contextlib
+
+# Backward-compatible module aliases for documented storage import paths.
+# ``from ttasks.storage.sqlite import SQLiteStore`` appears in the README, so
+# register lightweight modules that point back to the canonical public object.
+_storage_module = _types.ModuleType("ttasks.storage")
+_sqlite_module = _types.ModuleType("ttasks.storage.sqlite")
+vars(_storage_module)["SQLiteStore"] = SQLiteStore
+vars(_storage_module)["sqlite"] = _sqlite_module
+vars(_sqlite_module)["SQLiteStore"] = SQLiteStore
+storage = _storage_module
+_sys.modules.setdefault("ttasks.storage", _storage_module)
+_sys.modules.setdefault("ttasks.storage.sqlite", _sqlite_module)
+del _storage_module, _sqlite_module, _sys, _types

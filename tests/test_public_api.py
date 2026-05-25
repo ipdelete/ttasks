@@ -48,6 +48,18 @@ def test_every_public_name_is_importable_from_top_level() -> None:
         assert hasattr(ttasks, name), f"ttasks.{name} is missing"
 
 
+def test_documented_sqlite_import_path_resolves_to_public_store() -> None:
+    """The README's ttasks.storage.sqlite import path remains usable."""
+    from importlib import import_module
+
+    module = import_module("ttasks.storage.sqlite")
+
+    imported = vars(module)["SQLiteStore"]
+
+    assert imported is ttasks.SQLiteStore
+    assert imported is sqlite_mod.SQLiteStore
+
+
 def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     """Top-level re-exports point at the canonical submodule objects."""
     assert ttasks.EventBus is events_mod.EventBus
