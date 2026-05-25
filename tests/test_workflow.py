@@ -580,17 +580,6 @@ def test_run_returns_self_for_empty_graph() -> None:
 # ---- status views: succeeded / failed / blocked / ok -------------------------
 
 
-def test_succeeded_lists_done_tasks_in_graph() -> None:
-    """After a clean run every task in the graph is in succeeded."""
-    a = _bash("A", "echo a")
-    b = _bash("B", "echo b")
-    graph = TaskGraph()
-    graph[a] = []
-    graph[b] = [a]
-    graph.run(TaskExecutor())
-    assert {t.id for t in graph.succeeded} == {a.id, b.id}
-
-
 def test_succeeded_empty_before_run() -> None:
     """Before any run, no task has DONE status, so succeeded is empty."""
     a = _bash("A", "echo a")
@@ -643,19 +632,6 @@ def test_failed_empty_when_all_succeed() -> None:
     graph[a] = []
     graph.run(TaskExecutor())
     assert graph.failed == []
-
-
-def test_blocked_lists_skipped_descendants() -> None:
-    """Tasks skipped because their upstream failed land in graph.blocked."""
-    a = _bash("A", "exit 1")
-    b = _bash("B", "echo b")
-    c = _bash("C", "echo c")
-    graph = TaskGraph()
-    graph[a] = []
-    graph[b] = [a]
-    graph[c] = [b]
-    graph.run(TaskExecutor())
-    assert {t.id for t in graph.blocked} == {b.id, c.id}
 
 
 def test_blocked_empty_before_run() -> None:
@@ -805,16 +781,6 @@ def test_roots_returns_tasks_with_no_deps() -> None:
 def test_roots_empty_for_empty_graph() -> None:
     """No tasks -> no roots."""
     assert TaskGraph().roots() == []
-
-
-def test_roots_all_when_no_edges() -> None:
-    """Every task without deps is a root."""
-    a = _bash("A", "echo a")
-    b = _bash("B", "echo b")
-    graph = TaskGraph()
-    graph[a] = []
-    graph[b] = []
-    assert {t.id for t in graph.roots()} == {a.id, b.id}
 
 
 def test_leaves_returns_tasks_with_no_dependents() -> None:

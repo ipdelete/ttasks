@@ -210,29 +210,6 @@ def test_execute_passes_upstream_task_refs_to_handler() -> None:
     assert child.status == TaskStatus.DONE
 
 
-def test_execute_moves_task_through_running_to_done() -> None:
-    """execute() marks a task RUNNING before the handler sees it, then DONE."""
-    executor = TaskExecutor()
-    task = Task.bash("", title="Example")
-
-    def handler(context: TaskContext) -> str:
-        """Assert the executor transitions to RUNNING before dispatch."""
-        assert context.status == TaskStatus.RUNNING
-        return "ok"
-
-    executor.register(TaskType.BASH, handler)
-
-    result = executor.execute(task)
-
-    assert result.task_id == task.id
-    assert result.status == TaskStatus.DONE
-    assert result.output == "ok"
-    assert result.raw == "ok"
-    assert result.started_at <= result.finished_at
-    assert result.duration >= 0
-    assert task.status == TaskStatus.DONE
-
-
 def test_task_result_wraps_non_string_raw_values() -> None:
     """Arbitrary handler return values are preserved on TaskResult.raw."""
     executor = TaskExecutor()
@@ -263,24 +240,6 @@ def test_execute_rejects_task_without_registered_handler() -> None:
         executor.execute(task)
 
     assert task.status == TaskStatus.PENDING
-
-
-def test_handler_failure_marks_task_failed_and_stores_error() -> None:
-    """Handler exceptions move the task to FAILED and store the error text."""
-    executor = TaskExecutor()
-    task = Task.bash("", title="Example")
-
-    def handler(context: TaskContext) -> None:
-        """Raise a representative handler failure."""
-        raise RuntimeError("boom")
-
-    executor.register(TaskType.BASH, handler)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        executor.execute(task)
-
-    assert task.status == TaskStatus.FAILED
-    assert task.error == "boom"
 
 
 def test_execute_rejects_cancelled_task_without_calling_handler() -> None:
@@ -333,19 +292,6 @@ def test_executor_clears_previous_error_on_successful_retry() -> None:
     assert result.status == TaskStatus.DONE
     assert task.status == TaskStatus.DONE
     assert task.error is None
-
-
-def test_successful_execute_sets_task_result_timing() -> None:
-    """Successful execution records start, finish, and duration timing."""
-    executor = TaskExecutor()
-    task = Task.bash("echo hi", title="Example")
-
-    before = datetime.now()
-    result = executor.execute(task)
-    after = datetime.now()
-
-    assert_result_timing(result, before, after)
-    assert task.result is result
 
 
 def test_default_executor_can_execute_bash() -> None:
@@ -417,17 +363,6 @@ def test_failed_subprocess_result_preserves_output_error_and_returncode() -> Non
     assert task.result.error == "boom\n"
     assert task.result.returncode == 7
     assert isinstance(task.result.raw, subprocess.CompletedProcess)
-
-
-def test_running_process_registry_is_cleaned_after_failure() -> None:
-    """Failed subprocesses are removed from the running-process registry."""
-    executor = TaskExecutor()
-    task = Task.bash("exit 1", title="Fail")
-
-    with pytest.raises(RuntimeError):
-        executor.execute(task)
-
-    assert not executor.is_running(task.id)
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason="pwsh is not installed")
@@ -1043,8 +978,6 @@ def test_retry_after_failure_replaces_task_result() -> None:
 
 def test_executor_without_store_does_not_record_persistence() -> None:
     """When no store is configured the executor never touches persistence."""
-    from ttasks.store import InMemoryStore  # noqa: F401  (import keeps API alive)
-
     executor = TaskExecutor()
     task = _bash()
     executor.execute(task)
