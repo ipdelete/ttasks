@@ -307,16 +307,30 @@ class TaskGraph:
                     return all(inactive(d) for d in self._deps[tid])
                 return all(succeeded(d) for d in self._deps[tid])
 
+            def retryable_this_run(tid: str) -> bool:
+                """Return whether a bad-status task can still recover this run."""
+                task = self._tasks[tid]
+                return (
+                    tid not in futures
+                    and task.can_transition_to(TaskStatus.RUNNING)
+                    and (
+                        task.status != TaskStatus.BLOCKED
+                        or tid in entering_blocked
+                    )
+                )
+
             def first_bad_parent(tid: str) -> str | None:
                 """Return the first dep (in declaration order) blocking ``tid``.
 
                 A parent "blocks" when its status is FAILED, CANCELLED, or
-                BLOCKED. Returns ``None`` if every parent is still
-                recoverable. Pre-start handler errors terminalize the parent
-                to FAILED before raising, so status alone is authoritative.
+                BLOCKED and it cannot still be retried during this run.
+                Returns ``None`` if every bad parent is still recoverable.
+                Pre-start handler errors terminalize the parent to FAILED
+                before raising, so status plus retry eligibility is
+                authoritative.
                 """
                 for d in self._deps[tid]:
-                    if self._tasks[d].status.is_bad:
+                    if self._tasks[d].status.is_bad and not retryable_this_run(d):
                         return d
                 return None
 

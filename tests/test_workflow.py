@@ -974,6 +974,24 @@ def test_add_rejects_non_bool_required() -> None:
 # ---- Step 12: carryover-BLOCKED retry ----------------------------------------
 
 
+def test_failed_parent_added_after_child_retries_before_child_is_blocked() -> None:
+    """A retryable failed parent can recover even when visited after its child."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    a.transition_to(TaskStatus.RUNNING)
+    a.transition_to(TaskStatus.FAILED, error="previous failure")
+    graph = TaskGraph()
+    graph[b] = [a]
+    graph[a] = []
+
+    graph.run(TaskExecutor())
+
+    assert graph.ok
+    assert graph.blocked == []
+    assert a.status == TaskStatus.SUCCEEDED
+    assert b.status == TaskStatus.SUCCEEDED
+
+
 def test_carryover_blocked_with_succeeded_parent_recovers() -> None:
     """A BLOCKED task entering run() with all parents SUCCEEDED runs and succeeds."""
     a = _bash("A", "echo a")
