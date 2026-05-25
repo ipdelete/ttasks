@@ -104,6 +104,17 @@ def test_status_changes_through_transition_to() -> None:
     assert task.error is None
 
 
+def test_success_transition_clears_even_explicit_error_text() -> None:
+    """A SUCCEEDED task must not retain error text from a bad caller argument."""
+    task = Task.bash("echo hi", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+
+    task.transition_to(TaskStatus.SUCCEEDED, error="should be ignored")
+
+    assert task.status == TaskStatus.SUCCEEDED
+    assert task.error is None
+
+
 def test_cancel_changes_status_through_state_machine() -> None:
     """cancel() is a domain helper around the CANCELLED transition."""
     task = Task.bash("echo hi", title="Example")
@@ -121,6 +132,18 @@ def test_cancel_is_idempotent() -> None:
     task.cancel()
 
     assert task.status == TaskStatus.CANCELLED
+
+
+def test_cancel_after_success_is_no_op() -> None:
+    """Cancelling an already-succeeded task leaves the success intact."""
+    task = Task.bash("echo hi", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.SUCCEEDED)
+
+    task.cancel()
+
+    assert task.status == TaskStatus.SUCCEEDED
+    assert task.error is None
 
 
 def test_cancel_preserves_previous_error() -> None:

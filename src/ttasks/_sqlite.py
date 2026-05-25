@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import uuid
 import warnings
 from collections.abc import Iterator, MutableMapping
 from datetime import datetime
@@ -43,7 +44,18 @@ class _Connection:
     ) -> None:
         """Open or create the SQLite database at ``path`` and init the schema."""
         self.path = Path(path)
-        if self.path.parent != Path(""):
+        self._memory_uri: str | None = None
+        self._anchor_connection: sqlite3.Connection | None = None
+        if str(path) == ":memory:":
+            self._memory_uri = (
+                f"file:ttasks-{uuid.uuid4().hex}?mode=memory&cache=shared"
+            )
+            self._anchor_connection = sqlite3.connect(
+                self._memory_uri,
+                uri=True,
+                timeout=_CONNECT_TIMEOUT_SECONDS,
+            )
+        elif self.path.parent != Path(""):
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._schema_lock = RLock()
         self._allow_destructive = allow_destructive_migration
@@ -51,7 +63,14 @@ class _Connection:
 
     def connect(self) -> sqlite3.Connection:
         """Return a fresh SQLite connection configured for the store."""
-        connection = sqlite3.connect(self.path, timeout=_CONNECT_TIMEOUT_SECONDS)
+        if self._memory_uri is None:
+            connection = sqlite3.connect(self.path, timeout=_CONNECT_TIMEOUT_SECONDS)
+        else:
+            connection = sqlite3.connect(
+                self._memory_uri,
+                uri=True,
+                timeout=_CONNECT_TIMEOUT_SECONDS,
+            )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection

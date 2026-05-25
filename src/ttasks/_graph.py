@@ -174,6 +174,7 @@ class TaskGraph:
         """True iff every required task succeeded without run errors."""
         return all(
             self._tasks[tid].status == TaskStatus.SUCCEEDED
+            and tid not in self._errors
             for tid in self._deps
             if tid not in self._optional
         )
@@ -292,11 +293,23 @@ class TaskGraph:
                 """Return whether tid is already done or succeeded in this run."""
                 return self._tasks[tid].status == TaskStatus.SUCCEEDED
 
+            def retryable_this_run(tid: str) -> bool:
+                """Return whether a bad-status task can still recover this run."""
+                task = self._tasks[tid]
+                return (
+                    tid not in futures
+                    and task.can_transition_to(TaskStatus.RUNNING)
+                    and (
+                        task.status != TaskStatus.BLOCKED
+                        or tid in entering_blocked
+                    )
+                )
+
             def inactive(tid: str) -> bool:
                 """Return whether tid can no longer change in this run."""
                 task = self._tasks[tid]
                 return (
-                    task.is_terminal
+                    (task.is_terminal and not retryable_this_run(tid))
                     or tid in self._errors
                     or (tid in futures and futures[tid].done())
                 )
@@ -311,12 +324,14 @@ class TaskGraph:
                 """Return the first dep (in declaration order) blocking ``tid``.
 
                 A parent "blocks" when its status is FAILED, CANCELLED, or
-                BLOCKED. Returns ``None`` if every parent is still
-                recoverable. Pre-start handler errors terminalize the parent
-                to FAILED before raising, so status alone is authoritative.
+                BLOCKED and it cannot still be retried during this run.
+                Returns ``None`` if every bad parent is still recoverable.
+                Pre-start handler errors terminalize the parent to FAILED
+                before raising, so status plus retry eligibility is
+                authoritative.
                 """
                 for d in self._deps[tid]:
-                    if self._tasks[d].status.is_bad:
+                    if self._tasks[d].status.is_bad and not retryable_this_run(d):
                         return d
                 return None
 

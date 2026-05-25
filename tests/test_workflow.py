@@ -353,6 +353,26 @@ def test_diamond_runs_with_parallelism() -> None:
 # ---- Failure policy ----------------------------------------------------------
 
 
+def test_required_executor_error_makes_graph_not_ok_even_if_status_succeeded() -> None:
+    """A required task future error makes graph.ok false even with success status."""
+
+    class BrokenExecutor(TaskExecutor):
+        def execute(self, task, upstream=None):
+            task.transition_to(TaskStatus.RUNNING)
+            task.transition_to(TaskStatus.SUCCEEDED)
+            raise RuntimeError("executor post-processing failed")
+
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    graph[a] = []
+
+    graph.run(BrokenExecutor())
+
+    assert a.status == TaskStatus.SUCCEEDED
+    assert a.id in graph.errors
+    assert not graph.ok
+
+
 def test_graph_records_executor_errors() -> None:
     """Pre-start handler errors terminalize the task as FAILED with the error."""
     a = _bash("A", "echo a")
@@ -974,6 +994,24 @@ def test_add_rejects_non_bool_required() -> None:
 # ---- Step 12: carryover-BLOCKED retry ----------------------------------------
 
 
+def test_failed_parent_added_after_child_retries_before_child_is_blocked() -> None:
+    """A retryable failed parent can recover even when visited after its child."""
+    a = _bash("A", "echo a")
+    b = _bash("B", "echo b")
+    a.transition_to(TaskStatus.RUNNING)
+    a.transition_to(TaskStatus.FAILED, error="previous failure")
+    graph = TaskGraph()
+    graph[b] = [a]
+    graph[a] = []
+
+    graph.run(TaskExecutor())
+
+    assert graph.ok
+    assert graph.blocked == []
+    assert a.status == TaskStatus.SUCCEEDED
+    assert b.status == TaskStatus.SUCCEEDED
+
+
 def test_carryover_blocked_with_succeeded_parent_recovers() -> None:
     """A BLOCKED task entering run() with all parents SUCCEEDED runs and succeeds."""
     a = _bash("A", "echo a")
@@ -1039,6 +1077,32 @@ def test_within_run_blocked_is_not_retried_same_run() -> None:
     assert b.status == TaskStatus.BLOCKED
     # B was never submitted because it became BLOCKED in this run.
     assert attempts["B"] == 0
+
+
+def test_finally_waits_for_retryable_failed_dependency_added_later() -> None:
+    """A finally task waits for a retryable failed dependency to rerun first."""
+    parent = _bash("parent", "")
+    parent.transition_to(TaskStatus.RUNNING)
+    parent.transition_to(TaskStatus.FAILED, error="old failure")
+    cleanup = _bash("cleanup", "")
+    seen: list[str] = []
+
+    executor = TaskExecutor.empty()
+
+    def handler(context: Any) -> str:
+        seen.append(context.title)
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph.add(cleanup, after=[parent], finally_=True)
+    graph[parent] = []
+
+    graph.run(executor, max_workers=1)
+
+    assert seen == ["parent", "cleanup"]
+    assert parent.status == TaskStatus.SUCCEEDED
+    assert cleanup.status == TaskStatus.SUCCEEDED
 
 
 def test_finally_runs_after_carryover_blocked_recovers() -> None:

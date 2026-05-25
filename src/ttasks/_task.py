@@ -232,6 +232,9 @@ class Task:
             )
             raise ValueError(message)
 
+        if status in {TaskStatus.RUNNING, TaskStatus.SUCCEEDED}:
+            error = None
+
         self.error = error
         self._status = status
         if status == TaskStatus.RUNNING:
@@ -244,7 +247,7 @@ class Task:
         Cancellation is intentionally idempotent so duplicate user/API requests
         are harmless, while transition_to(CANCELLED) remains strict.
         """
-        if self.status == TaskStatus.CANCELLED:
+        if self.status in {TaskStatus.SUCCEEDED, TaskStatus.CANCELLED}:
             return
 
         self.transition_to(TaskStatus.CANCELLED, error=self.error)
