@@ -78,3 +78,60 @@ def test_event_bus_records_subscriber_errors_without_stopping_emit() -> None:
     assert isinstance(bus.errors[0], RuntimeError)
     assert str(bus.errors[0]) == "observer failed"
     assert bus.errors is not bus.errors
+
+
+def test_subscribed_context_manager_delivers_events_inside_block() -> None:
+    """Events emitted inside `with bus.subscribed(cb):` reach the callback."""
+    bus = EventBus()
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    event = _event(task, TaskEventType.STARTED)
+    seen: list[TaskEvent] = []
+
+    with bus.subscribed(seen.append):
+        bus.emit(event)
+
+    assert seen == [event]
+
+
+def test_subscribed_context_manager_unsubscribes_on_exit() -> None:
+    """After the with block exits, further emits do not reach the callback."""
+    bus = EventBus()
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    seen: list[TaskEvent] = []
+
+    with bus.subscribed(seen.append):
+        bus.emit(_event(task, TaskEventType.STARTED))
+
+    bus.emit(_event(task, TaskEventType.SUCCEEDED))
+
+    assert [e.type for e in seen] == [TaskEventType.STARTED]
+
+
+def test_subscribed_context_manager_unsubscribes_on_exception() -> None:
+    """Exceptions raised inside the with block still unsubscribe the callback."""
+    bus = EventBus()
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    seen: list[TaskEvent] = []
+
+    with pytest.raises(RuntimeError, match="boom"), bus.subscribed(seen.append):
+        raise RuntimeError("boom")
+
+    bus.emit(_event(task, TaskEventType.STARTED))
+
+    assert seen == []
+
+
+def test_subscribed_context_manager_supports_nested_callbacks() -> None:
+    """Nested with-blocks both receive events and both unsubscribe on exit."""
+    bus = EventBus()
+    task = Task(title="Example", payload="echo hi", type=TaskType.BASH)
+    outer: list[TaskEvent] = []
+    inner: list[TaskEvent] = []
+
+    with bus.subscribed(outer.append), bus.subscribed(inner.append):
+        bus.emit(_event(task, TaskEventType.STARTED))
+
+    bus.emit(_event(task, TaskEventType.SUCCEEDED))
+
+    assert [e.type for e in outer] == [TaskEventType.STARTED]
+    assert [e.type for e in inner] == [TaskEventType.STARTED]

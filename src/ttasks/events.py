@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -67,6 +68,19 @@ class EventBus:
                     self._subscribers.remove(subscriber)
 
         return unsubscribe
+
+    @contextmanager
+    def subscribed(self, subscriber: TaskEventHandler) -> Iterator[None]:
+        """Subscribe for the duration of a ``with`` block, then auto-unsubscribe.
+
+        The callback is unsubscribed on normal exit and on exception so a
+        short-lived observer cannot leak past its scope.
+        """
+        unsubscribe = self.subscribe(subscriber)
+        try:
+            yield
+        finally:
+            unsubscribe()
 
     def emit(self, event: TaskEvent) -> None:
         """Publish event to subscribers without letting observers fail execution."""

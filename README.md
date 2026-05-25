@@ -291,16 +291,18 @@ Every executor has an `EventBus` for task lifecycle events:
 from ttasks import TaskEvent, TaskEventType
 
 seen: list[TaskEvent] = []
-unsubscribe = executor.events.subscribe(seen.append)
 
-executor.execute(task)
-unsubscribe()
+with executor.events.subscribed(seen.append):
+    executor.execute(task)
 
 assert [event.type for event in seen] == [
     TaskEventType.STARTED,
     TaskEventType.SUCCEEDED,
 ]
 ```
+
+For long-lived subscribers, use `executor.events.subscribe(callback)`, which
+returns an idempotent unsubscribe callable.
 
 Events include:
 
