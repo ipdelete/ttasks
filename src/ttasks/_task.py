@@ -244,7 +244,7 @@ class Task:
         Cancellation is intentionally idempotent so duplicate user/API requests
         are harmless, while transition_to(CANCELLED) remains strict.
         """
-        if self.status == TaskStatus.CANCELLED:
+        if self.status in {TaskStatus.SUCCEEDED, TaskStatus.CANCELLED}:
             return
 
         self.transition_to(TaskStatus.CANCELLED, error=self.error)
