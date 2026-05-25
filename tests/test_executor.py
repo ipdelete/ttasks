@@ -1419,6 +1419,20 @@ class TestTerminationReason:
 # ---- Step 15: public mark_blocked seam --------------------------------------
 
 
+def test_mark_blocked_rejection_does_not_set_blocked_by() -> None:
+    """A failed mark_blocked() call must not leave stale block metadata."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    task.transition_to(TaskStatus.RUNNING)
+    task.transition_to(TaskStatus.SUCCEEDED)
+
+    with pytest.raises(ValueError, match="Cannot transition task"):
+        executor.mark_blocked(task, "parent-id-123")
+
+    assert task.status == TaskStatus.SUCCEEDED
+    assert task.blocked_by is None
+
+
 def test_mark_blocked_transitions_and_emits_blocked_event() -> None:
     """executor.mark_blocked(task, parent_id) is the public scheduler seam."""
     executor = TaskExecutor()
