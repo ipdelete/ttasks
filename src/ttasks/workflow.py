@@ -105,7 +105,7 @@ class TaskGraph:
 
     def __getitem__(self, task: Task) -> list[Task]:
         """Return the upstream :class:`Task` objects ``task`` depends on."""
-        return [self._tasks[d] for d in self._deps[task.id]]
+        return self.dependencies(task)
 
     def __contains__(self, task: object) -> bool:
         """Return whether ``task`` is a Task registered in this graph."""
@@ -189,11 +189,10 @@ class TaskGraph:
     @property
     def ok(self) -> bool:
         """True iff every required task succeeded without run errors."""
-        required = [tid for tid in self._deps if tid not in self._optional]
-        return (
-            all(self._tasks[tid].status == TaskStatus.DONE for tid in required)
-            and not any(tid not in self._optional for tid in self._errors)
-            and not any(tid not in self._optional for tid in self._blocked)
+        return all(
+            self._tasks[tid].status == TaskStatus.DONE
+            for tid in self._deps
+            if tid not in self._optional
         )
 
     # ---- topology views -----------------------------------------------------
