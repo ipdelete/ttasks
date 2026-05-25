@@ -3,7 +3,7 @@
 A :class:`Store` exposes two collections, :attr:`tasks` and :attr:`graphs`,
 each a ``MutableMapping[str, T]`` keyed by the object's own immutable ID.
 The in-memory implementation lives here; SQLite-backed storage lives in
-``ttasks.storage.sqlite``.
+``ttasks._sqlite`` and is re-exported as :class:`ttasks.SQLiteStore`.
 
 The store is the single seam between the runtime objects (``Task``,
 ``TaskGraph``) and any durable backend. ``TaskExecutor`` writes to

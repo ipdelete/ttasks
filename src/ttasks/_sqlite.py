@@ -9,8 +9,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
-from .._graph import TaskGraph
-from .._task import Task, TaskResult, TaskStatus, TaskType
+from ._graph import TaskGraph
+from ._task import Task, TaskResult, TaskStatus, TaskType
 
 _SCHEMA_VERSION = "1"
 _CONNECT_TIMEOUT_SECONDS = 30.0
@@ -317,9 +317,10 @@ class SQLiteGraphCollection(MutableMapping[str, TaskGraph]):
             task = self._tasks[task_id]
             deps = [self._tasks[d] for d in deps_by_task[task_id]]
             if bool(row["is_finally"]):
-                graph.add_finally(
+                graph.add(
                     task,
                     after=deps,
+                    finally_=True,
                     required=not bool(row["is_optional"]),
                 )
             else:

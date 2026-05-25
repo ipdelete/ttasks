@@ -88,20 +88,9 @@ class TaskGraph:
     def __setitem__(self, task: Task, deps: Iterable[Task]) -> None:
         """Register ``task`` in the graph and record its upstream dependencies.
 
-        Protocol-level alternative to :meth:`add` for callers using mapping
-        syntax. Prefer :meth:`add` in new code.
+        Mapping-syntax sugar for :meth:`add` (without ``finally_``).
         """
         self.add(task, after=deps)
-
-    def add_finally(
-        self,
-        task: Task,
-        after: Iterable[Task],
-        *,
-        required: bool = True,
-    ) -> None:
-        """Register a finally task. Prefer :meth:`add` with ``finally_=True``."""
-        self.add(task, after=after, finally_=True, required=required)
 
     def __getitem__(self, task: Task) -> list[Task]:
         """Return the upstream :class:`Task` objects ``task`` depends on."""
@@ -140,7 +129,7 @@ class TaskGraph:
         return [self._tasks[d] for d in self._deps[task.id]]
 
     def is_finally(self, task: Task) -> bool:
-        """Return whether ``task`` was registered via :meth:`add_finally`."""
+        """Return whether ``task`` was registered with ``finally_=True``."""
         return task.id in self._finally
 
     def is_optional(self, task: Task) -> bool:

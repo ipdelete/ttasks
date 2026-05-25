@@ -508,23 +508,6 @@ def test_required_finally_failure_makes_graph_not_ok() -> None:
     assert not graph.ok
 
 
-def test_add_finally_shim_delegates_to_add() -> None:
-    """add_finally is a back-compat shim around add(..., finally_=True)."""
-    a = _bash("A", "echo a")
-    cleanup = _bash("C", "echo c")
-    graph = TaskGraph()
-    graph.add(a)
-
-    graph.add_finally(cleanup, after=[a], required=False)
-
-    assert graph.is_finally(cleanup)
-    assert graph.is_optional(cleanup)
-    # Validation flows through add() and rejects truthy strings.
-    required: Any = "no"
-    with pytest.raises(TypeError, match="required must be a bool"):
-        graph.add_finally(cleanup, after=[], required=required)
-
-
 # ---- graph as post-run view -------------------------------------------------
 
 
@@ -917,8 +900,8 @@ def test_add_runs_like_setitem_form() -> None:
     assert graph.succeeded == [a, b]
 
 
-def test_setitem_still_works_for_mapping_compatibility() -> None:
-    """__setitem__ remains available for protocol completeness."""
+def test_setitem_registers_task_and_dependencies() -> None:
+    """``graph[task] = deps`` registers task with the given dependencies."""
     a = _bash("A", "echo a")
     b = _bash("B", "echo b")
     graph = TaskGraph()
@@ -926,3 +909,12 @@ def test_setitem_still_works_for_mapping_compatibility() -> None:
     graph[b] = [a]
 
     assert graph.dependencies(b) == [a]
+
+
+def test_add_rejects_non_bool_required() -> None:
+    """add() validates the required flag's type."""
+    a = _bash("A", "echo a")
+    graph = TaskGraph()
+    bad_required: Any = "no"
+    with pytest.raises(TypeError, match="required must be a bool"):
+        graph.add(a, finally_=True, required=bad_required)

@@ -7,8 +7,14 @@ from pathlib import Path
 import pytest
 from conftest import _bash, _opaque
 
-from ttasks import TaskExecutor, TaskGraph, TaskResult, TaskStatus, TaskType
-from ttasks.storage.sqlite import SQLiteStore
+from ttasks import (
+    SQLiteStore,
+    TaskExecutor,
+    TaskGraph,
+    TaskResult,
+    TaskStatus,
+    TaskType,
+)
 
 
 @pytest.fixture()

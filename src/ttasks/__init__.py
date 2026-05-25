@@ -13,12 +13,12 @@ from ._executor import (
     make_copilot_prompt_handler,
 )
 from ._graph import TaskGraph
+from ._sqlite import SQLiteStore
 from ._store import (
     InMemoryStore,
     Store,
 )
 from ._task import Task, TaskResult, TaskStatus, TaskType
-from .storage.sqlite import SQLiteStore
 
 __all__ = [
     "EventBus",

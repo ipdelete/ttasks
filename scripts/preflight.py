@@ -158,9 +158,10 @@ def build_graph(*, recommend: bool = False) -> TaskGraph:
             type=TaskType.PROMPT,
             timeout=120,
         )
-        graph.add_finally(
+        graph.add(
             recommendation,
             after=[lock_check, lint, types, tests, docs],
+            finally_=True,
             required=False,
         )
 

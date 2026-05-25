@@ -16,8 +16,7 @@ flat re-export surface, not from submodules.
 import time
 from pathlib import Path
 
-from ttasks import Task, TaskEvent, TaskExecutor, TaskGraph
-from ttasks.storage.sqlite import SQLiteStore
+from ttasks import SQLiteStore, Task, TaskEvent, TaskExecutor, TaskGraph
 
 
 def _print_graph(graph: TaskGraph) -> None:

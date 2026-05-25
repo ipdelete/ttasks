@@ -11,9 +11,9 @@ import ttasks
 from ttasks import _events as events_mod
 from ttasks import _executor as executor_mod
 from ttasks import _graph as graph_mod
+from ttasks import _sqlite as sqlite_mod
 from ttasks import _store as store_mod
 from ttasks import _task as task_mod
-from ttasks.storage import sqlite as sqlite_mod
 
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
