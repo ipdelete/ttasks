@@ -14,12 +14,10 @@ do not have to wire event-bus subscribers for normal persistence.
 from __future__ import annotations
 
 from collections.abc import Iterator, MutableMapping
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from .task import Task
-
-if TYPE_CHECKING:
-    from .workflow import TaskGraph
+from .workflow import TaskGraph
 
 
 class TaskCollection(Protocol):
@@ -130,9 +128,7 @@ class InMemoryGraphCollection(MutableMapping[str, "TaskGraph"]):
 
     def __setitem__(self, graph_id: str, graph: TaskGraph) -> None:
         """Store ``graph`` under its own ID."""
-        from .workflow import TaskGraph as _TaskGraph
-
-        if not isinstance(graph, _TaskGraph):
+        if not isinstance(graph, TaskGraph):
             raise TypeError(f"Expected TaskGraph, got {type(graph).__name__}")
         if graph_id != graph.id:
             raise ValueError("graph_id must match graph.id")
@@ -156,9 +152,7 @@ class InMemoryGraphCollection(MutableMapping[str, "TaskGraph"]):
 
     def __contains__(self, key: object) -> bool:
         """Return whether ``key`` (graph or graph id) is present."""
-        from .workflow import TaskGraph as _TaskGraph
-
-        if isinstance(key, _TaskGraph):
+        if isinstance(key, TaskGraph):
             return key.id in self._graphs
         return key in self._graphs
 
@@ -172,21 +166,9 @@ class InMemoryStore:
 
     def __init__(self) -> None:
         """Create empty task and graph collections."""
-        self._tasks = InMemoryTaskCollection()
-        self._graphs = InMemoryGraphCollection()
-
-    @property
-    def tasks(self) -> InMemoryTaskCollection:
-        """Return the task collection."""
-        return self._tasks
-
-    @property
-    def graphs(self) -> InMemoryGraphCollection:
-        """Return the graph collection."""
-        return self._graphs
+        self.tasks = InMemoryTaskCollection()
+        self.graphs = InMemoryGraphCollection()
 
     def __repr__(self) -> str:
         """Return a concise representation with task and graph counts."""
-        return (
-            f"InMemoryStore({len(self._tasks)} tasks, {len(self._graphs)} graphs)"
-        )
+        return f"InMemoryStore({len(self.tasks)} tasks, {len(self.graphs)} graphs)"

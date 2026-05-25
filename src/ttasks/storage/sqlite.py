@@ -368,18 +368,8 @@ class SQLiteStore:
         """Open or create a SQLite store at ``path``."""
         self.path = Path(path)
         self._connection = _Connection(path)
-        self._tasks = SQLiteTaskCollection(self._connection)
-        self._graphs = SQLiteGraphCollection(self._connection, self._tasks)
-
-    @property
-    def tasks(self) -> SQLiteTaskCollection:
-        """Return the task collection."""
-        return self._tasks
-
-    @property
-    def graphs(self) -> SQLiteGraphCollection:
-        """Return the graph collection."""
-        return self._graphs
+        self.tasks = SQLiteTaskCollection(self._connection)
+        self.graphs = SQLiteGraphCollection(self._connection, self.tasks)
 
     def __repr__(self) -> str:
         """Return a concise representation including the database path."""
