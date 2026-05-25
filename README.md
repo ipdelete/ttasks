@@ -125,8 +125,7 @@ assert task in store.tasks   # id-membership shortcut
 `InMemoryStore`. A single SQLite file holds both tasks and graphs.
 
 ```python
-from ttasks import Task, TaskGraph, TaskExecutor
-from ttasks.storage.sqlite import SQLiteStore
+from ttasks import Task, TaskGraph, TaskExecutor, SQLiteStore
 
 store = SQLiteStore("ttasks.db")
 
@@ -171,8 +170,7 @@ Persistence failures are isolated from execution: they are recorded on
 out of `execute()` and does not transition the task to `FAILED`.
 
 ```python
-from ttasks import TaskExecutor
-from ttasks.storage.sqlite import SQLiteStore
+from ttasks import TaskExecutor, SQLiteStore
 
 store = SQLiteStore("ttasks.db")
 executor = TaskExecutor(store=store)

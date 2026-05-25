@@ -333,6 +333,9 @@ class TaskExecutor:
         handler = self._handlers.get(task.type)
         if handler is None:
             message = f"No handler registered for task type {task.type.value!r}"
+            previous_status = task.status
+            if not task.can_transition_to(TaskStatus.FAILED):
+                task.transition_to(TaskStatus.RUNNING)
             finished_at = datetime.now()
             failed_result = TaskResult(
                 task_id=task.id,
@@ -347,7 +350,7 @@ class TaskExecutor:
                 task,
                 failed_result,
                 TaskStatus.FAILED,
-                previous=TaskStatus.PENDING,
+                previous=previous_status,
                 event_type=TaskEventType.FAILED,
                 error=message,
             )
