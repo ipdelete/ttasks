@@ -5,16 +5,11 @@ from datetime import datetime
 from typing import Any
 
 import pytest
+from conftest import _bash
 
 from ttasks.executor import TaskExecutor
-from ttasks.task import Task, TaskStatus, TaskType
+from ttasks.task import TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
-
-
-def _bash(title: str, payload: str) -> Task:
-    """Shorthand for a bash task."""
-    return Task(title=title, type=TaskType.BASH, payload=payload)
-
 
 # ---- Graph identity ----------------------------------------------------------
 

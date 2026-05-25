@@ -1,6 +1,7 @@
 """Tests for the unified Store and its in-memory backend."""
 
 import pytest
+from conftest import _bash, _opaque
 
 from ttasks.store import (
     InMemoryGraphCollection,
@@ -8,19 +9,8 @@ from ttasks.store import (
     InMemoryTaskCollection,
     Store,
 )
-from ttasks.task import Task, TaskStatus, TaskType
+from ttasks.task import TaskStatus
 from ttasks.workflow import TaskGraph
-
-
-def _bash(title: str = "T", payload: str = "echo t") -> Task:
-    """Create a bash task for tests."""
-    return Task(title=title, type=TaskType.BASH, payload=payload)
-
-
-def _opaque(value: object) -> object:
-    """Hide ``value`` behind ``object`` so the type checker forgets its literal."""
-    return value
-
 
 # ---- InMemoryTaskCollection -------------------------------------------------
 

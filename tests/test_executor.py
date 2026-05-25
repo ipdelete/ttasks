@@ -1064,7 +1064,7 @@ def test_retry_after_failure_replaces_task_result() -> None:
 
 def _bash_task(payload: str = "echo ok") -> Task:
     """Return a fresh bash task used by the auto-persist tests."""
-    return Task(title="t", type=TaskType.BASH, payload=payload)
+    return Task.bash(payload, title="t")
 
 
 def test_executor_without_store_does_not_record_persistence() -> None:

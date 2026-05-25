@@ -5,21 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import _bash, _opaque
 
 from ttasks.executor import TaskExecutor
 from ttasks.storage.sqlite import SQLiteStore
-from ttasks.task import Task, TaskResult, TaskStatus, TaskType
+from ttasks.task import TaskResult, TaskStatus, TaskType
 from ttasks.workflow import TaskGraph
-
-
-def _bash(title: str = "T", payload: str = "echo t") -> Task:
-    """Create a bash task for tests."""
-    return Task(title=title, type=TaskType.BASH, payload=payload)
-
-
-def _opaque(value: object) -> object:
-    """Hide ``value`` behind ``object`` so the type checker forgets its literal."""
-    return value
 
 
 @pytest.fixture()
