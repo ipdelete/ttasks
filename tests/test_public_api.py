@@ -16,14 +16,10 @@ from ttasks import workflow as workflow_mod
 
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
-    "GraphCollection",
-    "InMemoryGraphCollection",
     "InMemoryStore",
-    "InMemoryTaskCollection",
     "Store",
     "Task",
     "TaskCancelled",
-    "TaskCollection",
     "TaskContext",
     "TaskExecutionError",
     "TaskEvent",
@@ -54,11 +50,7 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     """Top-level re-exports point at the canonical submodule objects."""
     assert ttasks.EventBus is events_mod.EventBus
     assert ttasks.InMemoryStore is store_mod.InMemoryStore
-    assert ttasks.InMemoryTaskCollection is store_mod.InMemoryTaskCollection
-    assert ttasks.InMemoryGraphCollection is store_mod.InMemoryGraphCollection
     assert ttasks.Store is store_mod.Store
-    assert ttasks.TaskCollection is store_mod.TaskCollection
-    assert ttasks.GraphCollection is store_mod.GraphCollection
     assert ttasks.Task is task_mod.Task
     assert ttasks.TaskStatus is task_mod.TaskStatus
     assert ttasks.TaskType is task_mod.TaskType
