@@ -24,3 +24,4 @@ site/
 
 # Demo artifacts
 ttasks-demo.db
+src/ttasks/_version.py
