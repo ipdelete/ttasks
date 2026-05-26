@@ -222,6 +222,28 @@ For single-task execution, upstream refs can be passed manually:
 executor.execute(child_task, upstream={parent_task.id: parent_task})
 ```
 
+For asynchronous single-task execution, use `submit()` and close the executor
+when submitted work is done:
+
+```python
+from ttasks import Task, TaskExecutor
+
+with TaskExecutor() as executor:
+    task = Task.bash("echo async", title="Async example")
+    future = executor.submit(task)
+    result = future.result()
+
+assert result.output == "async\n"
+```
+
+`submit()` runs the same `execute()` path, so lifecycle events,
+auto-persistence, progress events, output events, results, and handler errors
+behave the same way as synchronous execution. The worker pool is created lazily
+on the first `submit()` call. `close()` is idempotent, rejects later `submit()`
+calls, and waits for already-submitted tasks to finish; it does not cancel
+running tasks. Use `executor.cancel(task)` for cooperative cancellation because
+`future.cancel()` can only cancel work that has not started yet.
+
 ### Prompt tasks
 
 Prompt tasks send `Task.payload` to Copilot and store the assistant message text

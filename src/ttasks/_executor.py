@@ -10,9 +10,10 @@ import subprocess
 import time
 import warnings
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from threading import Thread
+from threading import RLock, Thread
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TextIO, cast
 
@@ -159,6 +160,9 @@ class TaskExecutor:
         self.store = store
         self.persistence_errors: list[tuple[str, BaseException]] = []
         self.graph_persistence_errors: list[tuple[str, BaseException]] = []
+        self._pool: ThreadPoolExecutor | None = None
+        self._pool_lock = RLock()
+        self._closed = False
         if _register_defaults:
             self.register(TaskType.BASH, self._run_bash)
             self.register(TaskType.POWERSHELL, self._run_powershell)
@@ -188,6 +192,58 @@ class TaskExecutor:
         """Return whether task_id currently has a live subprocess."""
         process = self._running_processes.get(task_id)
         return process is not None and process.poll() is None
+
+    def submit(
+        self,
+        task: Task,
+        upstream: Mapping[str, Task] | None = None,
+    ) -> Future[TaskResult]:
+        """Submit ``task`` for asynchronous execution and return its future.
+
+        The task runs through :meth:`execute`, so events, persistence, results,
+        and cancellation behavior match synchronous execution. Calling
+        :meth:`Future.cancel` only cancels work that has not started yet; cancel
+        running tasks through :meth:`cancel`.
+        """
+        # Shallow-copy the mapping so caller mutation cannot race the worker;
+        # Task refs themselves intentionally remain shared.
+        upstream_snapshot = dict(upstream or {})
+        with self._pool_lock:
+            if self._closed:
+                raise RuntimeError("executor is closed")
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(thread_name_prefix="ttasks")
+            return self._pool.submit(self.execute, task, upstream_snapshot)
+
+    def close(self) -> None:
+        """Close asynchronous execution resources, waiting for submitted work.
+
+        Closing is idempotent. It prevents new :meth:`submit` calls and waits
+        for already-submitted tasks to finish, but it does not cancel running
+        tasks. Prefer using ``with TaskExecutor() as executor:`` so the internal
+        thread pool is always closed.
+        """
+        with self._pool_lock:
+            if self._closed:
+                return
+            self._closed = True
+            pool = self._pool
+            self._pool = None
+        if pool is not None:
+            pool.shutdown(wait=True)
+
+    def __enter__(self) -> TaskExecutor:
+        """Return this executor for context-manager use."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object | None,
+    ) -> None:
+        """Close asynchronous execution resources on context exit."""
+        self.close()
 
     def mark_blocked(self, task: Task, parent_id: str | None) -> None:
         """Transition ``task`` to BLOCKED, recording the parent that caused it.

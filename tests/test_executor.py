@@ -354,6 +354,207 @@ def test_execute_passes_upstream_task_refs_to_handler() -> None:
     assert child.status == TaskStatus.SUCCEEDED
 
 
+def test_submit_returns_future_that_completes_with_task_result() -> None:
+    """submit() asynchronously executes through the normal executor path."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> str:
+        """Return a successful handler result."""
+        assert context.status == TaskStatus.RUNNING
+        return "async-ok"
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    future = executor.submit(task)
+    result = future.result(timeout=1)
+    executor.close()
+
+    assert result is task.result
+    assert result.status == TaskStatus.SUCCEEDED
+    assert result.output == "async-ok"
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.SUCCEEDED,
+    ]
+
+
+def test_submit_auto_persists_task_lifecycle() -> None:
+    """submit() preserves execute() auto-persistence behavior."""
+    from ttasks import InMemoryStore
+
+    store = InMemoryStore()
+    executor = TaskExecutor(store=store)
+    task = Task.bash("", title="Example")
+
+    def handler(context: TaskContext) -> str:
+        """Return a successful handler result."""
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+
+    result = executor.submit(task).result(timeout=1)
+    executor.close()
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert store.tasks[task.id].status == TaskStatus.SUCCEEDED
+
+
+def test_submit_copies_upstream_mapping_before_worker_runs() -> None:
+    """submit() isolates the upstream mapping from caller mutation races."""
+    executor = TaskExecutor()
+    parent = Task.bash("", title="Parent")
+    child = Task.bash("", title="Child")
+    release = threading.Event()
+    upstream = {parent.id: parent}
+
+    def handler(context: TaskContext) -> str:
+        """Wait until the caller mutates its mapping, then inspect context."""
+        assert release.wait(timeout=1)
+        assert context.upstream[parent.id] is parent
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+
+    future = executor.submit(child, upstream=upstream)
+    upstream.clear()
+    release.set()
+    result = future.result(timeout=1)
+    executor.close()
+
+    assert result.status == TaskStatus.SUCCEEDED
+
+
+def test_submit_runs_multiple_tasks_concurrently() -> None:
+    """submit() supports concurrent execution through the lazy worker pool."""
+    executor = TaskExecutor()
+    tasks = [Task.bash("", title=f"Task {index}") for index in range(5)]
+    release = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+    all_started = threading.Event()
+    events: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> str:
+        """Wait until every submitted task has started before completing."""
+        nonlocal started
+        with started_lock:
+            started += 1
+            if started == len(tasks):
+                all_started.set()
+        assert release.wait(timeout=1)
+        return context.title
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    futures = [executor.submit(task) for task in tasks]
+    assert all_started.wait(timeout=1)
+    release.set()
+    results = [future.result(timeout=1) for future in futures]
+    executor.close()
+
+    assert {result.output for result in results} == {task.title for task in tasks}
+    assert all(task.status == TaskStatus.SUCCEEDED for task in tasks)
+    assert len([event for event in events if event.type is TaskEventType.STARTED]) == 5
+    succeeded_events = [
+        event for event in events if event.type is TaskEventType.SUCCEEDED
+    ]
+    assert len(succeeded_events) == 5
+
+
+def test_submit_missing_handler_future_raises_after_failed_event() -> None:
+    """A submitted task without a handler terminalizes before its future raises."""
+    executor = TaskExecutor.empty()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    future = executor.submit(task)
+
+    with pytest.raises(ValueError, match="No handler registered"):
+        future.result(timeout=1)
+    executor.close()
+
+    assert task.status == TaskStatus.FAILED
+    assert task.result is not None
+    assert task.result.termination_reason == "handler"
+    assert [event.type for event in events] == [TaskEventType.FAILED]
+
+
+def test_future_cancel_does_not_cancel_running_task() -> None:
+    """Running submitted tasks are cancelled through executor.cancel(), not Future."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    started = threading.Event()
+
+    def handler(context: TaskContext) -> None:
+        """Run until cooperative cancellation is requested."""
+        started.set()
+        while not context.cancelled:
+            time.sleep(0.01)
+        context.raise_if_cancelled()
+
+    executor.register(TaskType.BASH, handler)
+
+    future = executor.submit(task)
+    assert started.wait(timeout=1)
+    assert future.cancel() is False
+    executor.cancel(task)
+
+    with pytest.raises(TaskCancelled):
+        future.result(timeout=1)
+    executor.close()
+    assert task.status == TaskStatus.CANCELLED
+
+
+def test_close_is_idempotent_and_rejects_later_submit() -> None:
+    """close() can run repeatedly and prevents new async submissions."""
+    executor = TaskExecutor()
+
+    executor.close()
+    executor.close()
+
+    with pytest.raises(RuntimeError, match="executor is closed"):
+        executor.submit(Task.bash("", title="Example"))
+
+
+def test_close_waits_for_submitted_work_to_finish() -> None:
+    """close() drains already-submitted tasks instead of cancelling them."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    started = threading.Event()
+    release = threading.Event()
+
+    def handler(context: TaskContext) -> str:
+        """Block until close() is waiting, then complete normally."""
+        started.set()
+        assert release.wait(timeout=1)
+        return "done"
+
+    executor.register(TaskType.BASH, handler)
+    future = executor.submit(task)
+    assert started.wait(timeout=1)
+    release.set()
+    executor.close()
+
+    assert future.result(timeout=1).status == TaskStatus.SUCCEEDED
+    assert task.status == TaskStatus.SUCCEEDED
+
+
+def test_context_manager_closes_executor() -> None:
+    """Leaving a TaskExecutor context closes async execution resources."""
+    with TaskExecutor() as executor:
+        task = Task.bash("", title="Example")
+        executor.register(TaskType.BASH, lambda _context: "ok")
+        assert executor.submit(task).result(timeout=1).status == TaskStatus.SUCCEEDED
+
+    with pytest.raises(RuntimeError, match="executor is closed"):
+        executor.submit(Task.bash("", title="Later"))
+
+
 def test_task_result_wraps_non_string_raw_values() -> None:
     """Arbitrary handler return values are preserved on TaskResult.raw."""
     executor = TaskExecutor()
