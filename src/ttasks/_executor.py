@@ -236,6 +236,7 @@ class TaskExecutor:
         :meth:`Future.cancel` only cancels work that has not started yet; cancel
         running tasks through :meth:`cancel`.
         """
+        policy = self._resolve_retry_policy(retry_policy)
         # Shallow-copy the mapping so caller mutation cannot race the worker;
         # Task refs themselves intentionally remain shared.
         upstream_snapshot = dict(upstream or {})
@@ -248,7 +249,7 @@ class TaskExecutor:
                 self.execute,
                 task,
                 upstream_snapshot,
-                retry_policy=retry_policy,
+                retry_policy=policy,
             )
 
     def shutdown(self) -> None:
@@ -496,7 +497,7 @@ class TaskExecutor:
         ``retry_policy`` retries failed attempts for this single task only.
         Cancellation is never retried.
         """
-        policy = retry_policy or RetryPolicy()
+        policy = self._resolve_retry_policy(retry_policy)
         if policy.max_attempts == 1 or self._handlers.get(task.type) is None:
             return self._execute_once(task, upstream)
 
@@ -521,6 +522,15 @@ class TaskExecutor:
                     ) from None
 
         raise AssertionError("unreachable retry loop exit")  # pragma: no cover
+
+    @staticmethod
+    def _resolve_retry_policy(retry_policy: RetryPolicy | None) -> RetryPolicy:
+        """Return a concrete RetryPolicy, rejecting malformed public input."""
+        if retry_policy is None:
+            return RetryPolicy()
+        if not isinstance(retry_policy, RetryPolicy):
+            raise TypeError("retry_policy must be a RetryPolicy")
+        return retry_policy
 
     @staticmethod
     def _sleep_retry_backoff(task: Task, backoff: float) -> None:

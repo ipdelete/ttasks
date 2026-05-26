@@ -357,6 +357,30 @@ def test_retry_policy_rejects_invalid_backoff() -> None:
         RetryPolicy(backoff=float("nan"))
 
 
+def test_execute_rejects_invalid_retry_policy() -> None:
+    """execute() rejects malformed retry_policy values clearly."""
+    executor = TaskExecutor()
+    bad_policy: Any = object()
+
+    with pytest.raises(TypeError, match="retry_policy must be a RetryPolicy"):
+        executor.execute(Task.bash("", title="Example"), retry_policy=bad_policy)
+
+
+def test_submit_rejects_invalid_retry_policy_synchronously() -> None:
+    """submit() rejects malformed retry_policy values before queueing work."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    bad_policy: Any = object()
+
+    with pytest.raises(TypeError, match="retry_policy must be a RetryPolicy"):
+        executor.submit(task, retry_policy=bad_policy)
+
+    assert task.status == TaskStatus.PENDING
+    assert task.result is None
+    assert executor.is_shutdown is False
+    executor.close()
+
+
 def test_execute_retry_policy_recovers_after_handler_failure() -> None:
     """A retry policy re-runs a failed single task until it succeeds."""
     executor = TaskExecutor()
