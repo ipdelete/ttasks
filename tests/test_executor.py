@@ -381,6 +381,18 @@ def test_submit_rejects_invalid_retry_policy_synchronously() -> None:
     executor.close()
 
 
+def test_submit_rejects_non_task_synchronously() -> None:
+    """submit() rejects malformed task objects before creating async work."""
+    executor = TaskExecutor()
+    not_task: Any = object()
+
+    with pytest.raises(TypeError, match="task must be a Task"):
+        executor.submit(not_task)
+
+    assert executor.is_shutdown is False
+    executor.close()
+
+
 def test_execute_retry_policy_recovers_after_handler_failure() -> None:
     """A retry policy re-runs a failed single task until it succeeds."""
     executor = TaskExecutor()

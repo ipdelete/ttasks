@@ -237,6 +237,7 @@ class TaskExecutor:
         :meth:`Future.cancel` only cancels work that has not started yet; cancel
         running tasks through :meth:`cancel`.
         """
+        self._validate_task(task)
         policy = self._resolve_retry_policy(retry_policy)
         # Shallow-copy the mapping so caller mutation cannot race the worker;
         # Task refs themselves intentionally remain shared.
@@ -546,6 +547,12 @@ class TaskExecutor:
                     ) from None
 
         raise AssertionError("unreachable retry loop exit")  # pragma: no cover
+
+    @staticmethod
+    def _validate_task(task: Task) -> None:
+        """Reject malformed task arguments before accessing Task internals."""
+        if not isinstance(task, Task):
+            raise TypeError("task must be a Task")
 
     @staticmethod
     def _resolve_retry_policy(retry_policy: RetryPolicy | None) -> RetryPolicy:
