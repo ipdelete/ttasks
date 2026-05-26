@@ -141,8 +141,9 @@ def build_graph(*, recommend: bool = False) -> TaskGraph:
     tests = bash("Tests", "uv run pytest", timeout=180)
     docs = bash(
         "Build docs",
-        "uv run pdoc ttasks --output-directory site",
-        timeout=60,
+        "uv run mkdocs build --strict --site-dir site"
+        " && uv run pdoc ttasks --output-directory site/api",
+        timeout=90,
     )
 
     graph[lock_check] = []

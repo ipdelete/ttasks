@@ -1,0 +1,43 @@
+site_name: ttasks
+site_description: A small Python task ledger, executor, and DAG workflow library.
+site_url: https://ipdelete.github.io/ttasks/
+repo_url: https://github.com/ipdelete/ttasks
+repo_name: ipdelete/ttasks
+use_directory_urls: true
+
+theme:
+  name: material
+  palette:
+    scheme: default
+    primary: white
+    accent: blue
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Tutorials:
+      - Task execution: tutorials/task-execution.md
+      - Graph workflows: tutorials/graph-workflows.md
+      - Async execution: tutorials/async-execution.md
+  - Patterns:
+      - Finally tasks: patterns/finally-tasks.md
+      - Progress and output: patterns/progress-and-output.md
+      - Retries and cancellation: patterns/retries-and-cancellation.md
+  - Reference:
+      - API reference: reference/api.md
