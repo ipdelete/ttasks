@@ -1390,6 +1390,28 @@ def test_real_subprocess_timeout_kills_within_wall_budget() -> None:
     assert not executor.is_running(task.id)
 
 
+def test_timeout_applies_while_draining_output_from_background_children() -> None:
+    """A child inheriting stdout cannot make streaming output bypass timeout."""
+    executor = TaskExecutor()
+    task = Task.bash(
+        "printf 'before\\n'; sleep 2 &",
+        title="Background output holder",
+        timeout=0.1,
+    )
+
+    start = time.monotonic()
+    with pytest.raises(TaskTimeoutError, match="Task timed out after 0.1 seconds"):
+        executor.execute(task)
+    elapsed = time.monotonic() - start
+
+    assert task.status == TaskStatus.FAILED
+    assert task.result is not None
+    assert task.result.termination_reason == "timeout"
+    assert task.result.output == "before\n"
+    assert elapsed < 1.0, f"timeout waited for background child (took {elapsed:.2f}s)"
+    assert not executor.is_running(task.id)
+
+
 def test_timed_out_subprocess_result_preserves_partial_output() -> None:
     """Timeout results retain output captured before termination."""
     executor = TaskExecutor()

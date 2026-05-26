@@ -714,6 +714,16 @@ class TaskExecutor:
         stderr_thread.start()
         timed_out = False
         timeout_error: subprocess.TimeoutExpired | None = None
+        deadline = (
+            None if context.timeout is None else time.monotonic() + context.timeout
+        )
+
+        def remaining_timeout() -> float | None:
+            """Return remaining wall-clock timeout for process/output draining."""
+            if deadline is None:
+                return None
+            return max(0.0, deadline - time.monotonic())
+
         if context.cancelled:
             self._terminate_process(process)
         try:
@@ -724,14 +734,23 @@ class TaskExecutor:
                 timed_out = True
                 timeout_error = e
         finally:
-            stdout_thread.join()
-            stderr_thread.join()
+            for thread in (stdout_thread, stderr_thread):
+                thread.join(remaining_timeout())
+            if (
+                not timed_out
+                and deadline is not None
+                and (stdout_thread.is_alive() or stderr_thread.is_alive())
+            ):
+                self._terminate_process(process)
+                timed_out = True
+            if timed_out:
+                stdout_thread.join()
+                stderr_thread.join()
             self._running_processes.pop(context.id, None)
 
         stdout = "".join(stdout_chunks)
         stderr = "".join(stderr_chunks)
         if timed_out:
-            assert timeout_error is not None
             message = f"Task timed out after {context.timeout} seconds"
             completed = subprocess.CompletedProcess(
                 args=args,
@@ -739,7 +758,9 @@ class TaskExecutor:
                 stdout=stdout,
                 stderr=stderr,
             )
-            raise TaskTimeoutError(message, completed) from timeout_error
+            if timeout_error is not None:
+                raise TaskTimeoutError(message, completed) from timeout_error
+            raise TaskTimeoutError(message, completed)
 
         result = subprocess.CompletedProcess(
             args=args,
