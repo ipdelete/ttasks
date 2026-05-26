@@ -1213,6 +1213,46 @@ def test_finally_waits_for_retryable_failed_dependency_added_later() -> None:
     assert cleanup.status == TaskStatus.SUCCEEDED
 
 
+def test_finally_waits_for_inflight_carryover_retry() -> None:
+    """Finally tasks must not run while a carryover-failed parent is retrying."""
+    import threading
+
+    parent = _bash("parent", "")
+    parent.transition_to(TaskStatus.RUNNING)
+    parent.transition_to(TaskStatus.FAILED, error="old failure")
+    cleanup = _bash("cleanup", "")
+    release_parent = threading.Event()
+
+    class SlowRetryExecutor(TaskExecutor):
+        def execute(self, task: Any, *args: Any, **kwargs: Any) -> Any:
+            if task is parent:
+                assert release_parent.wait(timeout=1)
+            return super().execute(task, *args, **kwargs)
+
+    executor = SlowRetryExecutor.empty()
+
+    def handler(context: Any) -> str:
+        if context.id == cleanup.id:
+            return context.upstream[parent.id].status.value
+        return "parent retried"
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph.add(cleanup, after=[parent], finally_=True)
+    graph[parent] = []
+
+    timer = threading.Timer(0.1, release_parent.set)
+    timer.start()
+    try:
+        graph.run(executor, max_workers=2)
+    finally:
+        timer.cancel()
+
+    assert parent.status == TaskStatus.SUCCEEDED
+    assert cleanup.result is not None
+    assert cleanup.result.output == "succeeded"
+
+
 def test_finally_runs_after_carryover_blocked_recovers() -> None:
     """A finally task fires after a carryover-BLOCKED task recovers to SUCCEEDED."""
     finally_ran: list[str] = []

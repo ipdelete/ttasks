@@ -349,11 +349,12 @@ class TaskGraph:
 
             def inactive(tid: str) -> bool:
                 """Return whether tid can no longer change in this run."""
+                if tid in futures:
+                    return futures[tid].done()
                 task = self._tasks[tid]
                 return (
                     (task.is_terminal and not retryable_this_run(tid))
                     or tid in self._errors
-                    or (tid in futures and futures[tid].done())
                 )
 
             def ready(tid: str) -> bool:
