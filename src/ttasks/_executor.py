@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from threading import RLock, Thread
+from threading import RLock, Thread, current_thread
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TextIO, cast
 
@@ -265,7 +265,8 @@ class TaskExecutor:
             pool = self._pool
             self._pool = None
         if pool is not None:
-            pool.shutdown(wait=True)
+            pool_threads = getattr(pool, "_threads", ())
+            pool.shutdown(wait=current_thread() not in pool_threads)
 
     def close(self) -> None:
         """Alias for :meth:`shutdown` for resource-cleanup contexts."""

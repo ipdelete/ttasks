@@ -818,6 +818,29 @@ def test_shutdown_allows_queued_submissions_to_finish() -> None:
     assert queued.status == TaskStatus.SUCCEEDED
 
 
+def test_submitted_task_can_shutdown_its_executor() -> None:
+    """shutdown() from an executor worker should not fail the running task."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Self shutdown")
+
+    def handler(context: TaskContext) -> str:
+        """Close async submission from inside the running submitted task."""
+        executor.shutdown()
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+
+    future = executor.submit(task)
+    result = future.result(timeout=1)
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert result.output == "ok"
+    assert task.status == TaskStatus.SUCCEEDED
+    assert executor.is_shutdown is True
+    with pytest.raises(RuntimeError, match="executor is shut down"):
+        executor.submit(Task.bash("", title="Later"))
+
+
 def test_close_aliases_shutdown() -> None:
     """close() remains a resource-cleanup alias for graceful shutdown."""
     executor = TaskExecutor()
