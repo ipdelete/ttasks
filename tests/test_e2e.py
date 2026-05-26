@@ -27,6 +27,7 @@ from ttasks import (
     TaskExecutor,
     TaskGraph,
     TaskStatus,
+    TaskType,
 )
 
 pytestmark = pytest.mark.live
@@ -91,6 +92,14 @@ def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
     executor = TaskExecutor(store=store)
     events = _collect_events(executor)
 
+    def bash_with_progress(context):
+        """Emit progress from one real bash graph node, then run it normally."""
+        if context.id == concat.id:
+            context.emit_progress(50, "concatenating")
+        return executor._run_bash(context)
+
+    executor.register(TaskType.BASH, bash_with_progress)
+
     graph = TaskGraph(title="diamond")
     graph.add(setup)
     graph.add(write_a, after=[setup])
@@ -114,6 +123,15 @@ def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
     terminals = _terminals_by_task(events)
     assert set(terminals) == {t.id for t in graph}
     assert all(ev.type is TaskEventType.SUCCEEDED for ev in terminals.values())
+
+    progress_events = [ev for ev in events if ev.type is TaskEventType.PROGRESS]
+    assert len(progress_events) == 1
+    progress = progress_events[0]
+    assert progress.task is concat
+    assert progress.previous_status is None
+    assert progress.status == TaskStatus.RUNNING
+    assert progress.progress_percent == 50.0
+    assert progress.progress_message == "concatenating"
 
     # Cleanup ran after validate (timestamp ordering).
     assert terminals[cleanup.id].timestamp >= terminals[validate.id].timestamp
