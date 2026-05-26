@@ -214,6 +214,7 @@ Handler contract:
 - raising any other exception means failure
 - handlers should not mutate task lifecycle state directly
 - `context.upstream` exposes direct upstream task refs keyed by task ID
+- `context.emit_progress(percent, message)` emits progress events for observers
 
 For single-task execution, upstream refs can be passed manually:
 
@@ -318,16 +319,30 @@ returns an idempotent unsubscribe callable.
 
 Events include:
 
-- `type`: `STARTED`, `SUCCEEDED`, `FAILED`, `CANCELLED`, or `PERSISTENCE_FAILED`
+- `type`: `STARTED`, `PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELLED`,
+  `BLOCKED`, or `PERSISTENCE_FAILED`
 - `task_id`
 - `task`: the live task object
 - `previous_status`
 - `status`: the task status at event time
 - `timestamp`
 - `error`, when relevant
+- `progress_percent` and `progress_message`, when `type` is `PROGRESS`
 
 Subscriber exceptions do not fail task execution. They are recorded on
 `executor.events.errors` so observers cannot break the work they observe.
+
+Handlers can report progress without changing task lifecycle state:
+
+```python
+def handler(context):
+    context.emit_progress(25, "warming up")
+    context.emit_progress(message="still working")
+    return "done"
+```
+
+Progress percentages are optional finite values from 0 through 100. They are
+not required to be monotonic.
 
 ## Timeout policy
 
