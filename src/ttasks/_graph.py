@@ -376,6 +376,8 @@ class TaskGraph:
                 for d in self._deps[tid]:
                     if d in futures and not futures[d].done():
                         continue
+                    if d in self._errors:
+                        return d
                     if self._tasks[d].status.is_bad and not retryable_this_run(d):
                         return d
                 return None

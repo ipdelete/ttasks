@@ -287,6 +287,28 @@ def test_run_no_progress_guard_raises_runtime_error() -> None:
         graph._run_inner(TaskExecutor(), max_workers=1)
 
 
+def test_executor_setup_error_blocks_descendants_without_deadlock() -> None:
+    """A future error before task terminalization still blocks descendants."""
+    parent = _bash("Parent", "")
+    child = _bash("Child", "")
+
+    class ExplodingExecutor(TaskExecutor):
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("setup boom")
+
+    graph = TaskGraph()
+    graph[parent] = []
+    graph[child] = [parent]
+
+    graph.run(ExplodingExecutor.empty())
+
+    assert parent.status == TaskStatus.PENDING
+    assert child.status == TaskStatus.BLOCKED
+    assert child.blocked_by == parent.id
+    assert isinstance(graph.errors[parent.id], RuntimeError)
+    assert graph.ok is False
+
+
 # ---- Execution ---------------------------------------------------------------
 
 
