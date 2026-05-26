@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import signal
 import subprocess
@@ -34,15 +35,19 @@ class TaskContext:
 
     _task: Task
     _upstream: Mapping[str, Task]
+    _progress_emitter: Callable[[float | None, str | None], None] | None
 
     def __init__(
         self,
         task: Task,
         upstream: Mapping[str, Task] | None = None,
+        *,
+        progress_emitter: Callable[[float | None, str | None], None] | None = None,
     ) -> None:
         """Create a context for task with read-only upstream task refs."""
         object.__setattr__(self, "_task", task)
         object.__setattr__(self, "_upstream", MappingProxyType(dict(upstream or {})))
+        object.__setattr__(self, "_progress_emitter", progress_emitter)
 
     @property
     def id(self) -> str:
@@ -93,6 +98,33 @@ class TaskContext:
         """Raise TaskCancelled if cancellation has been requested."""
         if self.cancelled:
             raise TaskCancelled(f"Task {self.id!r} was cancelled")
+
+    def emit_progress(
+        self,
+        percent: float | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Emit a progress event for the running task.
+
+        At least one of ``percent`` or ``message`` must be provided. Percent is
+        an optional finite value from 0 through 100; callers are not required to
+        emit monotonically increasing percentages.
+        """
+        if percent is None and message is None:
+            raise ValueError("percent or message is required")
+        if percent is not None:
+            if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+                raise TypeError("percent must be a number")
+            if not math.isfinite(percent) or not 0 <= percent <= 100:
+                raise ValueError("percent must be between 0 and 100")
+            percent = float(percent)
+        if message is not None and not isinstance(message, str):
+            raise TypeError("message must be a str")
+
+        self.raise_if_cancelled()
+        if self._progress_emitter is None:
+            raise RuntimeError("progress cannot be emitted without an executor")
+        self._progress_emitter(percent, message)
 
 
 # Handler contract: returning any value means success and the value is
@@ -213,6 +245,26 @@ class TaskExecutor:
                 previous_status=previous_status,
                 status=task.status,
                 error=error,
+            )
+        )
+
+    def _emit_progress(
+        self,
+        task: Task,
+        percent: float | None,
+        message: str | None,
+    ) -> None:
+        """Emit a non-persistent progress event for ``task``."""
+        self.events.emit(
+            TaskEvent(
+                type=TaskEventType.PROGRESS,
+                task_id=task.id,
+                task=task,
+                timestamp=datetime.now(),
+                previous_status=None,
+                status=task.status,
+                progress_percent=percent,
+                progress_message=message,
             )
         )
 
@@ -374,7 +426,13 @@ class TaskExecutor:
                 **extras,
             )
 
-        context = TaskContext(task, upstream=upstream)
+        context = TaskContext(
+            task,
+            upstream=upstream,
+            progress_emitter=lambda percent, message: self._emit_progress(
+                task, percent, message,
+            ),
+        )
 
         try:
             raw_result = handler(context)
@@ -646,5 +704,4 @@ async def _run_copilot_text(
     if response is None or not isinstance(response.data, AssistantMessageData):
         return ""
     return response.data.content or ""
-
 

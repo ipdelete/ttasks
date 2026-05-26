@@ -66,6 +66,82 @@ def test_task_context_exposes_read_only_upstream_task_refs() -> None:
         upstream["other"] = child
 
 
+def test_task_context_emit_progress_uses_injected_emitter() -> None:
+    """TaskContext can emit validated progress through its injected callback."""
+    task = Task.bash("", title="Example")
+    seen: list[tuple[float | None, str | None]] = []
+    context = TaskContext(task, progress_emitter=lambda percent, message: seen.append(
+        (percent, message)
+    ))
+
+    context.emit_progress(12, "warming up")
+    context.emit_progress(message="still working")
+
+    assert seen == [(12.0, "warming up"), (None, "still working")]
+
+
+def test_task_context_emit_progress_requires_executor_emitter() -> None:
+    """Manually built contexts fail clearly when no executor owns progress."""
+    task = Task.bash("", title="Example")
+    context = TaskContext(task)
+
+    with pytest.raises(RuntimeError, match="without an executor"):
+        context.emit_progress(message="starting")
+
+
+def test_task_context_emit_progress_rejects_empty_event() -> None:
+    """Progress events must carry either a percentage or a message."""
+    task = Task.bash("", title="Example")
+    context = TaskContext(task)
+
+    with pytest.raises(ValueError, match="percent or message is required"):
+        context.emit_progress()
+
+
+@pytest.mark.parametrize("percent", [True, "50"])
+def test_task_context_emit_progress_rejects_non_numeric_percent(
+    percent: Any,
+) -> None:
+    """Progress percent must be numeric but not bool."""
+    task = Task.bash("", title="Example")
+    context = TaskContext(task)
+
+    with pytest.raises(TypeError, match="percent must be a number"):
+        context.emit_progress(percent=percent)
+
+
+@pytest.mark.parametrize("percent", [-1, 101, float("nan"), float("inf")])
+def test_task_context_emit_progress_rejects_out_of_range_percent(
+    percent: float,
+) -> None:
+    """Progress percent must be finite and between 0 and 100."""
+    task = Task.bash("", title="Example")
+    context = TaskContext(task)
+
+    with pytest.raises(ValueError, match="percent must be between 0 and 100"):
+        context.emit_progress(percent=percent)
+
+
+def test_task_context_emit_progress_rejects_non_string_message() -> None:
+    """Progress messages must be strings when provided."""
+    task = Task.bash("", title="Example")
+    context = TaskContext(task)
+    message: Any = 42
+
+    with pytest.raises(TypeError, match="message must be a str"):
+        context.emit_progress(message=message)
+
+
+def test_task_context_emit_progress_raises_when_cancelled() -> None:
+    """Emitting progress observes cooperative cancellation."""
+    task = Task.bash("", title="Example")
+    task.cancel()
+    context = TaskContext(task, progress_emitter=lambda _percent, _message: None)
+
+    with pytest.raises(TaskCancelled, match="was cancelled"):
+        context.emit_progress(message="too late")
+
+
 def test_register_rejects_non_task_type() -> None:
     """Handler registration rejects keys that are not TaskType values."""
     executor = TaskExecutor()
@@ -114,6 +190,67 @@ def test_execute_success_emits_started_and_succeeded_events() -> None:
     ]
     assert all(event.task is task for event in events)
     assert events[1].task.result is task.result
+
+
+def test_execute_handler_can_emit_progress_event() -> None:
+    """Handlers can report progress through the executor event bus."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> str:
+        """Emit a representative progress update."""
+        context.emit_progress(25, "warming up")
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    executor.execute(task)
+
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.PROGRESS,
+        TaskEventType.SUCCEEDED,
+    ]
+    progress = events[1]
+    assert progress.task is task
+    assert progress.previous_status is None
+    assert progress.status == TaskStatus.RUNNING
+    assert progress.progress_percent == 25.0
+    assert progress.progress_message == "warming up"
+
+
+def test_progress_subscriber_errors_do_not_fail_task_execution() -> None:
+    """Progress observers are isolated like lifecycle observers."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    seen: list[TaskEvent] = []
+
+    def handler(context: TaskContext) -> str:
+        """Emit progress and then complete successfully."""
+        context.emit_progress(message="halfway")
+        return "ok"
+
+    def broken(event: TaskEvent) -> None:
+        """Fail only while observing the progress event."""
+        if event.type is TaskEventType.PROGRESS:
+            raise RuntimeError("observer failed")
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(broken)
+    executor.events.subscribe(seen.append)
+
+    result = executor.execute(task)
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert [event.type for event in seen] == [
+        TaskEventType.STARTED,
+        TaskEventType.PROGRESS,
+        TaskEventType.SUCCEEDED,
+    ]
+    assert len(executor.events.errors) == 1
+    assert str(executor.events.errors[0]) == "observer failed"
 
 
 def test_execute_failure_emits_started_and_failed_events() -> None:
