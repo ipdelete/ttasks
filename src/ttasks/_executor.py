@@ -514,13 +514,27 @@ class TaskExecutor:
                 if out_of_attempts or task.status != TaskStatus.FAILED:
                     raise
                 if policy.backoff:
-                    time.sleep(policy.backoff)
+                    self._sleep_retry_backoff(task, policy.backoff)
                 if task.status == TaskStatus.CANCELLED:
                     raise TaskCancelled(
                         f"Task {task.id!r} was cancelled",
                     ) from None
 
         raise AssertionError("unreachable retry loop exit")  # pragma: no cover
+
+    @staticmethod
+    def _sleep_retry_backoff(task: Task, backoff: float) -> None:
+        """Sleep between retry attempts while periodically observing cancel()."""
+        if backoff <= 0.5:
+            time.sleep(backoff)
+            return
+
+        deadline = time.monotonic() + backoff
+        while task.status != TaskStatus.CANCELLED:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 0.05))
 
     def _execute_once(
         self,

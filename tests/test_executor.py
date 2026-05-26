@@ -503,6 +503,44 @@ def test_execute_retry_policy_honors_cancellation_during_backoff(
     assert task.status == TaskStatus.CANCELLED
 
 
+def test_retry_backoff_observes_external_cancellation_promptly() -> None:
+    """A real backoff sleep wakes promptly when another thread cancels the task."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    failed = threading.Event()
+    attempts = 0
+
+    def handler(context: TaskContext) -> None:
+        """Fail each attempt; cancellation should stop retries during backoff."""
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("boom")
+
+    def note_failure(event: TaskEvent) -> None:
+        if event.type is TaskEventType.FAILED:
+            failed.set()
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(note_failure)
+
+    future = executor.submit(
+        task,
+        retry_policy=RetryPolicy(max_attempts=2, backoff=1.0),
+    )
+    assert failed.wait(timeout=1)
+    start = time.monotonic()
+    executor.cancel(task)
+
+    with pytest.raises(TaskCancelled, match="was cancelled"):
+        future.result(timeout=0.5)
+    elapsed = time.monotonic() - start
+    executor.close()
+
+    assert attempts == 1
+    assert task.status == TaskStatus.CANCELLED
+    assert elapsed < 0.5
+
+
 def test_execute_retry_policy_honors_zero_backoff_cancellation() -> None:
     """Cancellation between immediate retry attempts is still observed."""
     executor = TaskExecutor()
