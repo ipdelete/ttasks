@@ -245,12 +245,16 @@ class TaskExecutor:
                 raise RuntimeError("executor is shut down")
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(thread_name_prefix="ttasks")
-            return self._pool.submit(
+            future = self._pool.submit(
                 self.execute,
                 task,
                 upstream_snapshot,
                 retry_policy=policy,
             )
+            future.add_done_callback(
+                lambda submitted: self.cancel(task) if submitted.cancelled() else None
+            )
+            return future
 
     def shutdown(self) -> None:
         """Shut down async submission, waiting for submitted work to finish.
