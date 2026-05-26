@@ -1307,28 +1307,30 @@ def test_graph_persistence_errors_initially_empty() -> None:
     assert executor.graph_persistence_errors == []
 
 
+class _BrokenGraphs:
+    def save(self, graph: Any) -> None:
+        raise RuntimeError("disk full")
+
+
+class _BrokenGraphStore:
+    @property
+    def tasks(self) -> Any:
+        return None
+
+    @property
+    def graphs(self) -> Any:
+        return _BrokenGraphs()
+
+
 def test_graph_save_failure_does_not_break_run_and_records_error() -> None:
     """A failing graph save records on graph_persistence_errors and warns."""
     import warnings
-
-    class _BrokenGraphs:
-        def save(self, graph: Any) -> None:
-            raise RuntimeError("disk full")
-
-    class _BrokenStore:
-        @property
-        def tasks(self) -> Any:
-            return None
-
-        @property
-        def graphs(self) -> Any:
-            return _BrokenGraphs()
 
     a = _bash("A", "echo a")
     graph = TaskGraph()
     graph[a] = []
 
-    executor = TaskExecutor(store=_BrokenStore())
+    executor = TaskExecutor(store=_BrokenGraphStore())
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         graph.run(executor)
@@ -1337,6 +1339,25 @@ def test_graph_save_failure_does_not_break_run_and_records_error() -> None:
     assert executor.graph_persistence_errors
     assert all(gid == graph.id for gid, _ in executor.graph_persistence_errors)
     assert any("graph persistence failed" in str(w.message) for w in captured)
+
+
+def test_graph_save_failure_does_not_propagate_when_warnings_are_errors() -> None:
+    """Graph persistence warnings remain non-fatal under strict warning filters."""
+    import warnings
+
+    a = _bash("A", "")
+    graph = TaskGraph()
+    graph[a] = []
+
+    executor = TaskExecutor.empty(store=_BrokenGraphStore())
+    executor.register(TaskType.BASH, lambda _context: "ok")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        graph.run(executor)
+
+    assert a.status == TaskStatus.SUCCEEDED
+    assert executor.graph_persistence_errors
+    assert all(gid == graph.id for gid, _ in executor.graph_persistence_errors)
 
 
 def test_persist_graph_no_store_is_noop() -> None:

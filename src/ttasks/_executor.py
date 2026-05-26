@@ -11,6 +11,7 @@ import time
 import warnings
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from threading import RLock, Thread, current_thread
@@ -434,10 +435,11 @@ class TaskExecutor:
             self.store.graphs.save(graph)
         except BaseException as error:
             self.graph_persistence_errors.append((graph.id, error))
-            warnings.warn(
-                f"graph persistence failed for graph {graph.id!r}: {error}",
-                stacklevel=2,
-            )
+            with suppress(Warning):
+                warnings.warn(
+                    f"graph persistence failed for graph {graph.id!r}: {error}",
+                    stacklevel=2,
+                )
 
     def cancel(self, task: Task) -> None:
         """Cancel a task and terminate its subprocess if one is active.
