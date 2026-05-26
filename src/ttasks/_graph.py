@@ -72,6 +72,8 @@ class TaskGraph:
         self._tasks[task.id] = task
         deps: list[str] = []
         for dep in after:
+            if not isinstance(dep, Task):
+                raise TypeError(f"Expected Task dependency, got {type(dep).__name__}")
             if dep.id not in deps:
                 deps.append(dep.id)
         self._deps[task.id] = deps

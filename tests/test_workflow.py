@@ -1055,6 +1055,16 @@ def test_add_rejects_non_task_and_non_bool_finally() -> None:
         graph.add(_bash("A", "echo a"), finally_=bad_finally)
 
 
+def test_add_rejects_non_task_dependency() -> None:
+    """add(after=...) validates dependencies instead of leaking AttributeError."""
+    graph = TaskGraph()
+    task = _bash("A", "echo a")
+    not_task: Any = object()
+
+    with pytest.raises(TypeError, match="Expected Task dependency, got object"):
+        graph.add(task, after=[not_task])
+
+
 def test_add_runs_like_setitem_form() -> None:
     """A graph built with .add() executes to the same end state as the mapping form."""
     a = _bash("A", "echo a")
