@@ -112,6 +112,22 @@ def test_live_bash_submit_executes_real_subprocess() -> None:
     ]
 
 
+def test_live_bash_shutdown_drains_submitted_subprocess() -> None:
+    """A real submitted bash task finishes during graceful shutdown."""
+    executor = TaskExecutor()
+    task = Task.bash("sleep 0.1; printf 'shutdown-live\\n'", title="shutdown-live")
+
+    future = executor.submit(task)
+    executor.shutdown()
+
+    assert future.result(timeout=1).status == TaskStatus.SUCCEEDED
+    assert task.result is not None
+    assert task.result.output == "shutdown-live\n"
+    assert executor.is_shutdown is True
+    with pytest.raises(RuntimeError, match="executor is shut down"):
+        executor.submit(Task.bash("true", title="later"))
+
+
 def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
     """Fan-out/fan-in with a required-cleanup finally task.
 
