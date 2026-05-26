@@ -1129,6 +1129,38 @@ def test_carryover_blocked_with_failed_parent_stays_blocked() -> None:
     assert b.status == TaskStatus.BLOCKED
 
 
+def test_descendant_waits_for_submitted_carryover_blocked_parent() -> None:
+    """A queued carryover-BLOCKED parent must not immediately block its child."""
+    a = _bash("A", "")
+    b = _bash("B", "")
+    c = _bash("C", "")
+    a.transition_to(TaskStatus.RUNNING)
+    a.transition_to(TaskStatus.FAILED, error="old failure")
+    b.transition_to(TaskStatus.BLOCKED)
+    b._set_blocked_by(a.id)
+    seen: list[str] = []
+
+    executor = TaskExecutor.empty()
+
+    def handler(context: Any) -> str:
+        seen.append(context.title)
+        return context.title
+
+    executor.register(TaskType.BASH, handler)
+    graph = TaskGraph()
+    graph[a] = []
+    graph[b] = [a]
+    graph[c] = [b]
+
+    graph.run(executor, max_workers=1)
+
+    assert seen == ["A", "B", "C"]
+    assert graph.ok
+    assert graph.blocked == []
+    assert b.blocked_by is None
+    assert c.status == TaskStatus.SUCCEEDED
+
+
 def test_within_run_blocked_is_not_retried_same_run() -> None:
     """A task BLOCKED during this run is terminal-for-the-run, not retried."""
     attempts: dict[str, int] = {"B": 0}
