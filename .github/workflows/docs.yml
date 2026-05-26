@@ -35,8 +35,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
+      - name: Build user documentation
+        run: uv run mkdocs build --strict --site-dir site
+
       - name: Build API documentation
-        run: uv run pdoc ttasks --output-directory site
+        run: uv run pdoc ttasks --output-directory site/api
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
