@@ -19,6 +19,7 @@ from ttasks import _version as version_mod
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
     "InMemoryStore",
+    "RetryPolicy",
     "SQLiteStore",
     "Store",
     "Task",
@@ -60,6 +61,7 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     assert ttasks.TaskType is task_mod.TaskType
     assert ttasks.TaskResult is task_mod.TaskResult
     assert ttasks.TaskTimeoutError is executor_mod.TaskTimeoutError
+    assert ttasks.RetryPolicy is executor_mod.RetryPolicy
     assert ttasks.TaskEvent is events_mod.TaskEvent
     assert ttasks.TaskEventType is events_mod.TaskEventType
     assert ttasks.TaskExecutionError is executor_mod.TaskExecutionError

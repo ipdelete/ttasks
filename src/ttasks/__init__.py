@@ -7,6 +7,7 @@ canonical and only supported import path for every name in ``__all__``.
 from ._events import EventBus, TaskEvent, TaskEventType
 from ._exceptions import TaskCancelled, TaskExecutionError, TaskTimeoutError
 from ._executor import (
+    RetryPolicy,
     TaskContext,
     TaskExecutor,
     make_copilot_agent_handler,
@@ -25,6 +26,7 @@ __all__ = [
     "InMemoryStore",
     "SQLiteStore",
     "Store",
+    "RetryPolicy",
     "Task",
     "TaskCancelled",
     "TaskContext",

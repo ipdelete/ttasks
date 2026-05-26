@@ -136,6 +136,30 @@ class TaskContext:
 TaskHandler = Callable[[TaskContext], Any]
 
 
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Single-task retry configuration."""
+
+    max_attempts: int = 1
+    backoff: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Validate retry configuration."""
+        if isinstance(self.max_attempts, bool) or not isinstance(
+            self.max_attempts, int,
+        ):
+            raise TypeError("max_attempts must be an int")
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        if isinstance(self.backoff, bool) or not isinstance(
+            self.backoff, (int, float),
+        ):
+            raise TypeError("backoff must be a number")
+        if not math.isfinite(self.backoff) or self.backoff < 0:
+            raise ValueError("backoff must be a finite non-negative number")
+        object.__setattr__(self, "backoff", float(self.backoff))
+
+
 class TaskExecutor:
     """Dispatch tasks to registered handlers and manage task state transitions.
 
@@ -202,6 +226,8 @@ class TaskExecutor:
         self,
         task: Task,
         upstream: Mapping[str, Task] | None = None,
+        *,
+        retry_policy: RetryPolicy | None = None,
     ) -> Future[TaskResult]:
         """Submit ``task`` for asynchronous execution and return its future.
 
@@ -218,7 +244,12 @@ class TaskExecutor:
                 raise RuntimeError("executor is shut down")
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(thread_name_prefix="ttasks")
-            return self._pool.submit(self.execute, task, upstream_snapshot)
+            return self._pool.submit(
+                self.execute,
+                task,
+                upstream_snapshot,
+                retry_policy=retry_policy,
+            )
 
     def shutdown(self) -> None:
         """Shut down async submission, waiting for submitted work to finish.
@@ -440,6 +471,8 @@ class TaskExecutor:
         self,
         task: Task,
         upstream: Mapping[str, Task] | None = None,
+        *,
+        retry_policy: RetryPolicy | None = None,
     ) -> TaskResult:
         """Execute task with its registered handler.
 
@@ -458,7 +491,42 @@ class TaskExecutor:
         custom handlers. Handlers that want subprocess failures represented as
         structured TaskResult data should raise TaskExecutionError or
         TaskTimeoutError.
+
+        ``retry_policy`` retries failed attempts for this single task only.
+        Cancellation is never retried.
         """
+        policy = retry_policy or RetryPolicy()
+        if policy.max_attempts == 1 or self._handlers.get(task.type) is None:
+            return self._execute_once(task, upstream)
+
+        for attempt in range(policy.max_attempts):
+            try:
+                return self._execute_once(task, upstream)
+            except TaskCancelled:
+                raise
+            except Exception:
+                if task.status == TaskStatus.CANCELLED:
+                    raise TaskCancelled(
+                        f"Task {task.id!r} was cancelled",
+                    ) from None
+                out_of_attempts = attempt + 1 >= policy.max_attempts
+                if out_of_attempts or task.status != TaskStatus.FAILED:
+                    raise
+                if policy.backoff:
+                    time.sleep(policy.backoff)
+                if task.status == TaskStatus.CANCELLED:
+                    raise TaskCancelled(
+                        f"Task {task.id!r} was cancelled",
+                    ) from None
+
+        raise AssertionError("unreachable retry loop exit")  # pragma: no cover
+
+    def _execute_once(
+        self,
+        task: Task,
+        upstream: Mapping[str, Task] | None = None,
+    ) -> TaskResult:
+        """Execute one task attempt with its registered handler."""
         if not task.can_transition_to(TaskStatus.RUNNING):
             raise ValueError(f"Cannot execute task with status {task.status.value!r}")
 

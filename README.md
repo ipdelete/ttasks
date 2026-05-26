@@ -247,6 +247,23 @@ reports whether async submission has been shut down. Use `executor.cancel(task)`
 for cooperative cancellation because `future.cancel()` can only cancel work that
 has not started yet.
 
+Single-task retries are opt-in with `RetryPolicy`:
+
+```python
+from ttasks import RetryPolicy, Task, TaskExecutor
+
+executor = TaskExecutor()
+task = Task.bash("./flaky-command", title="Flaky command")
+
+result = executor.execute(task, retry_policy=RetryPolicy(max_attempts=3, backoff=0.5))
+```
+
+`max_attempts` is the total attempt count, including the first run. `backoff`
+is the number of seconds to sleep between failed attempts. Retries apply to
+single-task `execute()` and `submit()` calls; graph-level retry is not provided
+by this policy. Cancellation is never retried. Each attempt emits its normal
+lifecycle events, and `task.result` reflects only the final attempt.
+
 ### Prompt tasks
 
 Prompt tasks send `Task.payload` to Copilot and store the assistant message text
