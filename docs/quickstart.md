@@ -19,6 +19,26 @@ assert task.result is result
 and Copilot agent tasks. You can override any handler or create an executor with
 no defaults by using `TaskExecutor.empty()`.
 
+## Share a Copilot agent session
+
+The default Copilot agent handler creates a fresh Copilot session for each task.
+Use `CopilotAgentSession` when multiple `Task.agent(...)` tasks should share one
+conversation:
+
+```python
+from ttasks import CopilotAgentSession, Task, TaskExecutor, TaskType
+
+with CopilotAgentSession(working_directory="/path/to/repo") as agent:
+    executor = TaskExecutor()
+    executor.register(TaskType.AGENT, agent.handler())
+
+    executor.execute(Task.agent("Create a first change."))
+    executor.execute(Task.agent("Continue from the previous change."))
+```
+
+Shared sessions preserve conversation state across agent tasks. The handler
+serializes turns through the session, including when used by `TaskGraph`.
+
 ## Run a graph
 
 ```python

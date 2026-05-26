@@ -517,6 +517,22 @@ def test_execute_retry_policy_applies_backoff_between_attempts(
     assert sleeps == [0.25]
 
 
+def test_retry_backoff_long_sleep_returns_at_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Long retry backoff sleeps in small intervals until the deadline."""
+    task = Task.bash("", title="Example")
+    ticks = iter([0.0, 0.1, 0.6])
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
+    TaskExecutor._sleep_retry_backoff(task, 0.51)
+
+    assert sleeps == [0.05]
+
+
 def test_execute_retry_policy_honors_cancellation_during_backoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

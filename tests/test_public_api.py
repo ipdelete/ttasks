@@ -15,6 +15,7 @@ from ttasks import _sqlite as sqlite_mod
 from ttasks import _store as store_mod
 from ttasks import _task as task_mod
 from ttasks import _version as version_mod
+from ttasks import copilot as copilot_mod
 
 EXPECTED_PUBLIC_NAMES = {
     "EventBus",
@@ -22,6 +23,7 @@ EXPECTED_PUBLIC_NAMES = {
     "RetryPolicy",
     "SQLiteStore",
     "Store",
+    "CopilotAgentSession",
     "Task",
     "TaskCancelled",
     "TaskContext",
@@ -56,6 +58,7 @@ def test_top_level_names_are_the_same_objects_as_submodule_names() -> None:
     assert ttasks.InMemoryStore is store_mod.InMemoryStore
     assert ttasks.SQLiteStore is sqlite_mod.SQLiteStore
     assert ttasks.Store is store_mod.Store
+    assert ttasks.CopilotAgentSession is copilot_mod.CopilotAgentSession
     assert ttasks.Task is task_mod.Task
     assert ttasks.TaskStatus is task_mod.TaskStatus
     assert ttasks.TaskType is task_mod.TaskType
