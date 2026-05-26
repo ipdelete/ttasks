@@ -27,6 +27,47 @@ assert result.output == "hello\n"
 assert task.result is result
 ```
 
+Subscribe to executor events to observe lifecycle changes, progress, and
+streamed subprocess output:
+
+```python
+from ttasks import Task, TaskEvent, TaskExecutor
+
+def print_event(event: TaskEvent) -> None:
+    print(f"{event.type.value}: {event.task.title} -> {event.status.value}")
+
+executor = TaskExecutor()
+unsubscribe = executor.events.subscribe(print_event)
+try:
+    executor.execute(Task.bash("echo hello", title="Say hello"))
+finally:
+    unsubscribe()
+```
+
+Use a store when task and graph state should be inspectable or durable:
+
+```python
+from pathlib import Path
+
+from ttasks import SQLiteStore, Task, TaskExecutor, TaskGraph
+
+store = SQLiteStore(Path("ttasks.db"))  # use InMemoryStore() for tests
+executor = TaskExecutor(store=store)
+
+build = Task.bash("echo build", title="Build")
+test = Task.bash("echo test", title="Test")
+
+graph = TaskGraph(title="stored pipeline")
+graph.add(build)
+graph.add(test, after=[build])
+graph.run(executor)
+
+assert store.tasks[build.id].status == build.status
+assert store.graphs[graph.id].ok is True
+```
+
+For a fuller runnable example, see `main.py`.
+
 ## What it provides
 
 - `Task` and `TaskResult` domain objects for tracking work and outcomes.
