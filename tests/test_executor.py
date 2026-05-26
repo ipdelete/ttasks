@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -510,19 +511,21 @@ def test_future_cancel_does_not_cancel_running_task() -> None:
     assert task.status == TaskStatus.CANCELLED
 
 
-def test_close_is_idempotent_and_rejects_later_submit() -> None:
-    """close() can run repeatedly and prevents new async submissions."""
+def test_shutdown_is_idempotent_and_rejects_later_submit() -> None:
+    """shutdown() can run repeatedly and prevents new async submissions."""
     executor = TaskExecutor()
 
-    executor.close()
-    executor.close()
+    assert executor.is_shutdown is False
+    executor.shutdown()
+    executor.shutdown()
 
-    with pytest.raises(RuntimeError, match="executor is closed"):
+    assert executor.is_shutdown is True
+    with pytest.raises(RuntimeError, match="executor is shut down"):
         executor.submit(Task.bash("", title="Example"))
 
 
-def test_close_waits_for_submitted_work_to_finish() -> None:
-    """close() drains already-submitted tasks instead of cancelling them."""
+def test_shutdown_waits_for_submitted_work_to_finish() -> None:
+    """shutdown() drains already-submitted tasks instead of cancelling them."""
     executor = TaskExecutor()
     task = Task.bash("", title="Example")
     started = threading.Event()
@@ -538,20 +541,73 @@ def test_close_waits_for_submitted_work_to_finish() -> None:
     future = executor.submit(task)
     assert started.wait(timeout=1)
     release.set()
-    executor.close()
+    executor.shutdown()
 
     assert future.result(timeout=1).status == TaskStatus.SUCCEEDED
     assert task.status == TaskStatus.SUCCEEDED
 
 
+def test_shutdown_allows_queued_submissions_to_finish() -> None:
+    """Queued work submitted before shutdown still runs during graceful drain."""
+    executor = TaskExecutor()
+    blocker = Task.bash("", title="Blocker")
+    queued = Task.bash("", title="Queued")
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    queued_started = threading.Event()
+
+    def handler(context: TaskContext) -> str:
+        """Block the first worker so the second task stays queued."""
+        if context.id == blocker.id:
+            blocker_started.set()
+            assert release_blocker.wait(timeout=1)
+        if context.id == queued.id:
+            queued_started.set()
+        return context.title
+
+    executor.register(TaskType.BASH, handler)
+    with executor._pool_lock:
+        executor._pool = ThreadPoolExecutor(max_workers=1)
+
+    blocker_future = executor.submit(blocker)
+    assert blocker_started.wait(timeout=1)
+    queued_future = executor.submit(queued)
+
+    shutdown_thread = threading.Thread(target=executor.shutdown)
+    shutdown_thread.start()
+    time.sleep(0.05)
+    assert queued_started.is_set() is False
+    release_blocker.set()
+    shutdown_thread.join(timeout=1)
+
+    assert not shutdown_thread.is_alive()
+    assert blocker_future.result(timeout=1).output == "Blocker"
+    assert queued_future.result(timeout=1).output == "Queued"
+    assert queued_started.is_set()
+    assert blocker.status == TaskStatus.SUCCEEDED
+    assert queued.status == TaskStatus.SUCCEEDED
+
+
+def test_close_aliases_shutdown() -> None:
+    """close() remains a resource-cleanup alias for graceful shutdown."""
+    executor = TaskExecutor()
+
+    executor.close()
+
+    assert executor.is_shutdown is True
+    with pytest.raises(RuntimeError, match="executor is shut down"):
+        executor.submit(Task.bash("", title="Example"))
+
+
 def test_context_manager_closes_executor() -> None:
-    """Leaving a TaskExecutor context closes async execution resources."""
+    """Leaving a TaskExecutor context shuts down async execution resources."""
     with TaskExecutor() as executor:
         task = Task.bash("", title="Example")
         executor.register(TaskType.BASH, lambda _context: "ok")
         assert executor.submit(task).result(timeout=1).status == TaskStatus.SUCCEEDED
 
-    with pytest.raises(RuntimeError, match="executor is closed"):
+    assert executor.is_shutdown is True
+    with pytest.raises(RuntimeError, match="executor is shut down"):
         executor.submit(Task.bash("", title="Later"))
 
 

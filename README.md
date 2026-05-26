@@ -222,8 +222,8 @@ For single-task execution, upstream refs can be passed manually:
 executor.execute(child_task, upstream={parent_task.id: parent_task})
 ```
 
-For asynchronous single-task execution, use `submit()` and close the executor
-when submitted work is done:
+For asynchronous single-task execution, use `submit()` and shut the executor
+down when submitted work is done:
 
 ```python
 from ttasks import Task, TaskExecutor
@@ -239,10 +239,13 @@ assert result.output == "async\n"
 `submit()` runs the same `execute()` path, so lifecycle events,
 auto-persistence, progress events, output events, results, and handler errors
 behave the same way as synchronous execution. The worker pool is created lazily
-on the first `submit()` call. `close()` is idempotent, rejects later `submit()`
-calls, and waits for already-submitted tasks to finish; it does not cancel
-running tasks. Use `executor.cancel(task)` for cooperative cancellation because
-`future.cancel()` can only cancel work that has not started yet.
+on the first `submit()` call. `shutdown()` is idempotent, rejects later
+`submit()` calls, and waits for already-submitted tasks to finish, including
+queued tasks that have not started yet. It does not cancel running or queued
+tasks. `close()` is an alias for `shutdown()`, and `executor.is_shutdown`
+reports whether async submission has been shut down. Use `executor.cancel(task)`
+for cooperative cancellation because `future.cancel()` can only cancel work that
+has not started yet.
 
 ### Prompt tasks
 

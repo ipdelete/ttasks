@@ -193,6 +193,11 @@ class TaskExecutor:
         process = self._running_processes.get(task_id)
         return process is not None and process.poll() is None
 
+    @property
+    def is_shutdown(self) -> bool:
+        """Return whether async submission has been shut down."""
+        return self._closed
+
     def submit(
         self,
         task: Task,
@@ -210,18 +215,17 @@ class TaskExecutor:
         upstream_snapshot = dict(upstream or {})
         with self._pool_lock:
             if self._closed:
-                raise RuntimeError("executor is closed")
+                raise RuntimeError("executor is shut down")
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(thread_name_prefix="ttasks")
             return self._pool.submit(self.execute, task, upstream_snapshot)
 
-    def close(self) -> None:
-        """Close asynchronous execution resources, waiting for submitted work.
+    def shutdown(self) -> None:
+        """Shut down async submission, waiting for submitted work to finish.
 
-        Closing is idempotent. It prevents new :meth:`submit` calls and waits
-        for already-submitted tasks to finish, but it does not cancel running
-        tasks. Prefer using ``with TaskExecutor() as executor:`` so the internal
-        thread pool is always closed.
+        Shutdown is idempotent. It prevents new :meth:`submit` calls and waits
+        for already-submitted tasks to finish, including queued tasks that have
+        not started yet. It does not cancel running or queued tasks.
         """
         with self._pool_lock:
             if self._closed:
@@ -231,6 +235,10 @@ class TaskExecutor:
             self._pool = None
         if pool is not None:
             pool.shutdown(wait=True)
+
+    def close(self) -> None:
+        """Alias for :meth:`shutdown` for resource-cleanup contexts."""
+        self.shutdown()
 
     def __enter__(self) -> TaskExecutor:
         """Return this executor for context-manager use."""
