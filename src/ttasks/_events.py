@@ -8,8 +8,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from threading import RLock
+from typing import Literal
 
 from ._task import Task, TaskStatus
+
+OutputStream = Literal["stdout", "stderr"]
 
 
 class TaskEventType(Enum):
@@ -17,6 +20,7 @@ class TaskEventType(Enum):
 
     STARTED = "started"
     PROGRESS = "progress"
+    OUTPUT = "output"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -37,6 +41,8 @@ class TaskEvent:
     error: str | None = None
     progress_percent: float | None = None
     progress_message: str | None = None
+    output_stream: OutputStream | None = None
+    output_chunk: str | None = None
 
 
 TaskEventHandler = Callable[[TaskEvent], None]

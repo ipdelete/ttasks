@@ -1,5 +1,6 @@
 """Tests for task execution, retries, timeout, and cancellation."""
 
+import io
 import shutil
 import signal
 import subprocess
@@ -663,6 +664,117 @@ def test_default_executor_can_execute_bash() -> None:
     assert not executor.is_running(task.id)
 
 
+def test_bash_task_emits_output_events_and_retains_result_output() -> None:
+    """Built-in subprocess handlers stream stdout/stderr and retain them."""
+    executor = TaskExecutor()
+    task = Task.bash(
+        "printf 'out1\\nout2\\n'; printf 'err1\\nerr2\\n' >&2",
+        title="Streaming",
+    )
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    result = executor.execute(task)
+
+    output_events = [event for event in events if event.type is TaskEventType.OUTPUT]
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stdout"
+    ) == result.output
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stderr"
+    ) == result.error
+    assert result.output == "out1\nout2\n"
+    assert result.error == "err1\nerr2\n"
+    assert all(event.previous_status is None for event in output_events)
+    assert all(event.status == TaskStatus.RUNNING for event in output_events)
+    assert events[-1].type is TaskEventType.SUCCEEDED
+
+
+def test_failed_bash_task_emits_output_events_before_failed_event() -> None:
+    """Streaming output is visible even when the subprocess exits non-zero."""
+    executor = TaskExecutor()
+    task = Task.bash("echo before; echo boom >&2; exit 7", title="Failing command")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(TaskExecutionError, match="boom"):
+        executor.execute(task)
+
+    assert task.result is not None
+    output_events = [event for event in events if event.type is TaskEventType.OUTPUT]
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stdout"
+    ) == task.result.output
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stderr"
+    ) == task.result.error
+    assert events[-1].type is TaskEventType.FAILED
+    assert all(
+        events.index(event) < len(events) - 1
+        for event in output_events
+    )
+
+
+def test_timed_out_bash_task_emits_partial_output_events() -> None:
+    """Timeouts stream output produced before termination."""
+    executor = TaskExecutor()
+    task = Task.bash(
+        "echo before; echo warn >&2; sleep 30",
+        title="Partial timeout",
+        timeout=0.1,
+    )
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(TaskTimeoutError, match="Task timed out after 0.1 seconds"):
+        executor.execute(task)
+
+    assert task.result is not None
+    assert isinstance(task.result.raw, subprocess.CompletedProcess)
+    output_events = [event for event in events if event.type is TaskEventType.OUTPUT]
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stdout"
+    ) == task.result.output
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stderr"
+    ) == task.result.raw.stderr
+    assert events[-1].type is TaskEventType.FAILED
+
+
+def test_output_subscriber_errors_do_not_fail_task_execution() -> None:
+    """Output observers are isolated like lifecycle observers."""
+    executor = TaskExecutor()
+    task = Task.bash("echo hi", title="Streaming")
+    seen: list[TaskEvent] = []
+
+    def broken(event: TaskEvent) -> None:
+        """Fail only while observing output."""
+        if event.type is TaskEventType.OUTPUT:
+            raise RuntimeError("observer failed")
+
+    executor.events.subscribe(broken)
+    executor.events.subscribe(seen.append)
+
+    result = executor.execute(task)
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert any(event.type is TaskEventType.OUTPUT for event in seen)
+    assert len(executor.events.errors) == 1
+    assert str(executor.events.errors[0]) == "observer failed"
+
+
 def test_bash_task_supports_shell_syntax() -> None:
     """BASH tasks intentionally execute shell syntax such as pipes."""
     executor = TaskExecutor()
@@ -888,7 +1000,8 @@ def test_run_command_terminates_if_task_cancelled_during_process_start() -> None
     process = Mock(spec=subprocess.Popen)
     process.pid = 12345
     process.returncode = -signal.SIGTERM
-    process.communicate.return_value = ("", "")
+    process.stdout = io.StringIO("")
+    process.stderr = io.StringIO("")
 
     def fake_popen(*args: object, **kwargs: object) -> Mock:
         """Cancel after process creation but before _run_command can register it."""

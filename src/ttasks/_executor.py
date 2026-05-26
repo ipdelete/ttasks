@@ -12,10 +12,11 @@ import warnings
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from threading import Thread
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
-from ._events import EventBus, TaskEvent, TaskEventType
+from ._events import EventBus, OutputStream, TaskEvent, TaskEventType
 from ._exceptions import TaskCancelled, TaskExecutionError, TaskTimeoutError
 from ._task import Task, TaskResult, TaskStatus, TaskType, TerminationReason
 
@@ -265,6 +266,21 @@ class TaskExecutor:
                 status=task.status,
                 progress_percent=percent,
                 progress_message=message,
+            )
+        )
+
+    def _emit_output(self, task: Task, stream: OutputStream, chunk: str) -> None:
+        """Emit a non-persistent subprocess output event for ``task``."""
+        self.events.emit(
+            TaskEvent(
+                type=TaskEventType.OUTPUT,
+                task_id=task.id,
+                task=task,
+                timestamp=datetime.now(),
+                previous_status=None,
+                status=task.status,
+                output_stream=stream,
+                output_chunk=chunk,
             )
         )
 
@@ -539,24 +555,59 @@ class TaskExecutor:
             start_new_session=True,
         )
         self._running_processes[context.id] = process
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def read_output(
+            pipe: TextIO,
+            stream: OutputStream,
+            chunks: list[str],
+        ) -> None:
+            """Read one text stream to completion and emit each line."""
+            for chunk in iter(pipe.readline, ""):
+                chunks.append(chunk)
+                self._emit_output(context._task, stream, chunk)
+
+        stdout_thread = Thread(
+            target=read_output,
+            args=(cast("TextIO", process.stdout), "stdout", stdout_chunks),
+            daemon=True,
+        )
+        stderr_thread = Thread(
+            target=read_output,
+            args=(cast("TextIO", process.stderr), "stderr", stderr_chunks),
+            daemon=True,
+        )
+        stdout_thread.start()
+        stderr_thread.start()
+        timed_out = False
+        timeout_error: subprocess.TimeoutExpired | None = None
         if context.cancelled:
             self._terminate_process(process)
         try:
             try:
-                stdout, stderr = process.communicate(timeout=context.timeout)
+                process.wait(timeout=context.timeout)
             except subprocess.TimeoutExpired as e:
                 self._terminate_process(process)
-                stdout, stderr = process.communicate()
-                message = f"Task timed out after {context.timeout} seconds"
-                completed = subprocess.CompletedProcess(
-                    args=args,
-                    returncode=process.returncode,
-                    stdout=stdout,
-                    stderr=stderr,
-                )
-                raise TaskTimeoutError(message, completed) from e
+                timed_out = True
+                timeout_error = e
         finally:
+            stdout_thread.join()
+            stderr_thread.join()
             self._running_processes.pop(context.id, None)
+
+        stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
+        if timed_out:
+            assert timeout_error is not None
+            message = f"Task timed out after {context.timeout} seconds"
+            completed = subprocess.CompletedProcess(
+                args=args,
+                returncode=process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            raise TaskTimeoutError(message, completed) from timeout_error
 
         result = subprocess.CompletedProcess(
             args=args,
@@ -704,4 +755,3 @@ async def _run_copilot_text(
     if response is None or not isinstance(response.data, AssistantMessageData):
         return ""
     return response.data.content or ""
-

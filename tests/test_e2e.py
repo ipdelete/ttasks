@@ -65,6 +65,32 @@ def _terminals_by_task(events: Iterable[TaskEvent]) -> dict[str, TaskEvent]:
 # --- Test 1: diamond + finally cleanup --------------------------------------
 
 
+def test_live_bash_streams_output_events() -> None:
+    """A real bash task emits stdout/stderr OUTPUT events and retains output."""
+    executor = TaskExecutor()
+    events = _collect_events(executor)
+    task = Task.bash(
+        "printf 'live-out\\n'; printf 'live-err\\n' >&2",
+        title="stream-output",
+    )
+
+    result = executor.execute(task)
+
+    output_events = [event for event in events if event.type is TaskEventType.OUTPUT]
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stdout"
+    ) == "live-out\n"
+    assert "".join(
+        event.output_chunk or ""
+        for event in output_events
+        if event.output_stream == "stderr"
+    ) == "live-err\n"
+    assert result.output == "live-out\n"
+    assert result.error == "live-err\n"
+
+
 def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
     """Fan-out/fan-in with a required-cleanup finally task.
 
