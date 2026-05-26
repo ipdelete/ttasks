@@ -246,15 +246,26 @@ class TaskExecutor:
             if self._pool is None:
                 self._pool = ThreadPoolExecutor(thread_name_prefix="ttasks")
             future = self._pool.submit(
-                self.execute,
+                self._execute_submitted,
                 task,
                 upstream_snapshot,
-                retry_policy=policy,
+                policy,
             )
             future.add_done_callback(
                 lambda submitted: self.cancel(task) if submitted.cancelled() else None
             )
             return future
+
+    def _execute_submitted(
+        self,
+        task: Task,
+        upstream: Mapping[str, Task],
+        retry_policy: RetryPolicy,
+    ) -> TaskResult:
+        """Execute submitted work, preserving queued cancellation semantics."""
+        if task.status == TaskStatus.CANCELLED:
+            raise TaskCancelled(f"Task {task.id!r} was cancelled")
+        return self.execute(task, upstream, retry_policy=retry_policy)
 
     def shutdown(self) -> None:
         """Shut down async submission, waiting for submitted work to finish.

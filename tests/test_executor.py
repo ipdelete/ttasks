@@ -777,6 +777,41 @@ def test_submit_missing_handler_future_raises_after_failed_event() -> None:
     assert [event.type for event in events] == [TaskEventType.FAILED]
 
 
+def test_executor_cancelled_queued_submit_raises_task_cancelled() -> None:
+    """executor.cancel() for queued async work is reflected on the future."""
+    executor = TaskExecutor()
+    blocker = Task.bash("", title="Blocker")
+    queued = Task.bash("", title="Queued")
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+
+    def handler(context: TaskContext) -> str:
+        """Keep one worker occupied so the second future remains queued."""
+        if context.id == blocker.id:
+            blocker_started.set()
+            assert release_blocker.wait(timeout=1)
+        return context.title
+
+    executor.register(TaskType.BASH, handler)
+    with executor._pool_lock:
+        executor._pool = ThreadPoolExecutor(max_workers=1)
+
+    blocker_future = executor.submit(blocker)
+    assert blocker_started.wait(timeout=1)
+    queued_future = executor.submit(queued)
+    executor.cancel(queued)
+    release_blocker.set()
+
+    assert blocker_future.result(timeout=1).output == "Blocker"
+    with pytest.raises(TaskCancelled, match="was cancelled"):
+        queued_future.result(timeout=1)
+    executor.close()
+
+    assert queued.status == TaskStatus.CANCELLED
+    assert queued.result is not None
+    assert queued.result.termination_reason == "cancelled"
+
+
 def test_future_cancel_marks_queued_task_cancelled() -> None:
     """Future.cancel() on queued work is reflected in task state and events."""
     executor = TaskExecutor()
