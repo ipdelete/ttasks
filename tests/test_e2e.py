@@ -91,6 +91,27 @@ def test_live_bash_streams_output_events() -> None:
     assert result.error == "live-err\n"
 
 
+def test_live_bash_submit_executes_real_subprocess() -> None:
+    """A real bash task submitted asynchronously completes through its future."""
+    with TaskExecutor() as executor:
+        events = _collect_events(executor)
+        task = Task.bash("printf 'submit-live\\n'", title="submit-live")
+
+        future = executor.submit(task)
+        result = future.result(timeout=5)
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert result.output == "submit-live\n"
+    assert task.result is result
+    lifecycle_events = [
+        event.type for event in events if event.type is not TaskEventType.OUTPUT
+    ]
+    assert lifecycle_events == [
+        TaskEventType.STARTED,
+        TaskEventType.SUCCEEDED,
+    ]
+
+
 def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:
     """Fan-out/fan-in with a required-cleanup finally task.
 
