@@ -954,6 +954,44 @@ def test_shutdown_allows_queued_submissions_to_finish() -> None:
     assert queued.status == TaskStatus.SUCCEEDED
 
 
+def test_shutdown_from_worker_waits_for_other_running_workers() -> None:
+    """shutdown() from a worker still waits for other in-flight work."""
+    executor = TaskExecutor()
+    shutdown_task = Task.bash("", title="Shutdown")
+    other_task = Task.bash("", title="Other")
+    other_started = threading.Event()
+    release_other = threading.Event()
+    other_finished = threading.Event()
+
+    def handler(context: TaskContext) -> str:
+        """One worker shuts down while the other is still running."""
+        if context.id == other_task.id:
+            other_started.set()
+            assert release_other.wait(timeout=1)
+            other_finished.set()
+            return "other done"
+        assert other_started.wait(timeout=1)
+        timer = threading.Timer(0.1, release_other.set)
+        timer.start()
+        try:
+            executor.shutdown()
+        finally:
+            timer.cancel()
+        return "waited" if other_finished.is_set() else "returned early"
+
+    executor.register(TaskType.BASH, handler)
+    with executor._pool_lock:
+        executor._pool = ThreadPoolExecutor(max_workers=2)
+
+    other_future = executor.submit(other_task)
+    assert other_started.wait(timeout=1)
+    shutdown_future = executor.submit(shutdown_task)
+
+    assert shutdown_future.result(timeout=1).output == "waited"
+    assert other_future.result(timeout=1).output == "other done"
+    assert executor.is_shutdown is True
+
+
 def test_submitted_task_can_shutdown_its_executor() -> None:
     """shutdown() from an executor worker should not fail the running task."""
     executor = TaskExecutor()

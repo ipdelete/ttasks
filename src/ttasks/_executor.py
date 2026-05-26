@@ -282,8 +282,15 @@ class TaskExecutor:
             pool = self._pool
             self._pool = None
         if pool is not None:
-            pool_threads = getattr(pool, "_threads", ())
-            pool.shutdown(wait=current_thread() not in pool_threads)
+            current = current_thread()
+            pool_threads = list(getattr(pool, "_threads", ()))
+            if current in pool_threads:
+                pool.shutdown(wait=False)
+                for thread in pool_threads:
+                    if thread is not current:
+                        thread.join()
+            else:
+                pool.shutdown(wait=True)
 
     def close(self) -> None:
         """Alias for :meth:`shutdown` for resource-cleanup contexts."""
