@@ -319,8 +319,8 @@ returns an idempotent unsubscribe callable.
 
 Events include:
 
-- `type`: `STARTED`, `PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELLED`,
-  `BLOCKED`, or `PERSISTENCE_FAILED`
+- `type`: `STARTED`, `PROGRESS`, `OUTPUT`, `SUCCEEDED`, `FAILED`,
+  `CANCELLED`, `BLOCKED`, or `PERSISTENCE_FAILED`
 - `task_id`
 - `task`: the live task object
 - `previous_status`
@@ -328,6 +328,8 @@ Events include:
 - `timestamp`
 - `error`, when relevant
 - `progress_percent` and `progress_message`, when `type` is `PROGRESS`
+- `output_stream` (`"stdout"` or `"stderr"`) and `output_chunk`, when `type`
+  is `OUTPUT`
 
 Subscriber exceptions do not fail task execution. They are recorded on
 `executor.events.errors` so observers cannot break the work they observe.
@@ -343,6 +345,11 @@ def handler(context):
 
 Progress percentages are optional finite values from 0 through 100. They are
 not required to be monotonic.
+
+Built-in subprocess handlers emit `OUTPUT` events as stdout and stderr lines are
+read. Complete stdout and stderr are still retained on the terminal
+`TaskResult`. Output subscribers run synchronously on reader threads, so keep
+callbacks fast.
 
 ## Timeout policy
 
