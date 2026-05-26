@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from ttasks import (
+    CopilotAgentSession,
     RetryPolicy,
     SQLiteStore,
     Task,
@@ -549,3 +550,54 @@ def test_mixed_type_copilot_workflow(tmp_path: Path) -> None:
         if task.result is not None:
             assert persisted.result is not None
             assert persisted.result.output == task.result.output
+
+
+@pytest.mark.skipif(
+    not _copilot_available(),
+    reason="Copilot SDK CLI not on PATH; skipping live shared-session test",
+)
+def test_shared_copilot_agent_session_graph_multiturn(tmp_path: Path) -> None:
+    """Two AGENT graph nodes share one Copilot session conversation."""
+    memory_file = tmp_path / "memory.txt"
+    code_word = "blue-sparrow-ttasks-live"
+
+    remember = Task.agent(
+        (
+            "Remember this code word for the next task in this same session: "
+            f"{code_word}. Do not create or modify any files. "
+            f"Reply exactly: remembered {code_word}"
+        ),
+        title="agent_remember",
+        timeout=180,
+    )
+    write_memory = Task.agent(
+        (
+            "Using only the code word I gave you earlier in this session, "
+            "create a file named memory.txt in the working directory containing "
+            "only that code word followed by a newline."
+        ),
+        title="agent_write_memory",
+        timeout=180,
+    )
+    verify_memory = Task.bash(
+        f"test \"$(cat {memory_file})\" = {code_word!r}",
+        title="verify_memory",
+    )
+
+    graph = TaskGraph(title="shared-copilot-session")
+    graph.add(remember)
+    graph.add(write_memory, after=[remember])
+    graph.add(verify_memory, after=[write_memory])
+
+    with CopilotAgentSession(working_directory=str(tmp_path)) as agent:
+        executor = TaskExecutor()
+        executor.register(TaskType.AGENT, agent.handler())
+        graph.run(executor)
+
+    assert graph.ok, (
+        f"graph not ok: statuses="
+        f"{ {task.title: task.status.value for task in graph} }"
+    )
+    for task in graph:
+        assert task.status == TaskStatus.SUCCEEDED
+    assert memory_file.read_text() == f"{code_word}\n"

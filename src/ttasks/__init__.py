@@ -20,12 +20,14 @@ from ._store import (
     Store,
 )
 from ._task import Task, TaskResult, TaskStatus, TaskType
+from .copilot import CopilotAgentSession
 
 __all__ = [
     "EventBus",
     "InMemoryStore",
     "SQLiteStore",
     "Store",
+    "CopilotAgentSession",
     "RetryPolicy",
     "Task",
     "TaskCancelled",
