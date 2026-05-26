@@ -404,7 +404,7 @@ def test_required_executor_error_makes_graph_not_ok_even_if_status_succeeded() -
     """A required task future error makes graph.ok false even with success status."""
 
     class BrokenExecutor(TaskExecutor):
-        def execute(self, task, upstream=None):
+        def execute(self, task, upstream=None, *, retry_policy=None):
             task.transition_to(TaskStatus.RUNNING)
             task.transition_to(TaskStatus.SUCCEEDED)
             raise RuntimeError("executor post-processing failed")

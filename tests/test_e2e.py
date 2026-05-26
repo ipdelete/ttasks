@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from ttasks import (
+    RetryPolicy,
     SQLiteStore,
     Task,
     TaskEvent,
@@ -126,6 +127,26 @@ def test_live_bash_shutdown_drains_submitted_subprocess() -> None:
     assert executor.is_shutdown is True
     with pytest.raises(RuntimeError, match="executor is shut down"):
         executor.submit(Task.bash("true", title="later"))
+
+
+def test_live_bash_retry_policy_recovers_failed_subprocess(tmp_path: Path) -> None:
+    """A real bash task can fail once and recover on retry."""
+    marker = tmp_path / "retried"
+    task = Task.bash(
+        (
+            f"if test -f {marker}; then "
+            "printf 'retry-live\\n'; "
+            f"else touch {marker}; exit 1; fi"
+        ),
+        title="retry-live",
+    )
+    executor = TaskExecutor()
+
+    result = executor.execute(task, retry_policy=RetryPolicy(max_attempts=2))
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert result.output == "retry-live\n"
+    assert marker.exists()
 
 
 def test_diamond_with_finally_cleanup(tmp_path: Path) -> None:

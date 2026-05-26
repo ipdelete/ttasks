@@ -17,6 +17,7 @@ import pytest
 from conftest import _bash
 
 from ttasks import (
+    RetryPolicy,
     Task,
     TaskCancelled,
     TaskContext,
@@ -334,6 +335,235 @@ def test_retry_after_failure_emits_started_event_from_failed_status() -> None:
         TaskStatus.PENDING,
         TaskStatus.FAILED,
     ]
+
+
+def test_retry_policy_rejects_invalid_max_attempts() -> None:
+    """RetryPolicy requires a positive integer attempt count."""
+    max_attempts: Any = True
+    with pytest.raises(TypeError, match="max_attempts must be an int"):
+        RetryPolicy(max_attempts=max_attempts)
+    with pytest.raises(ValueError, match="max_attempts must be at least 1"):
+        RetryPolicy(max_attempts=0)
+
+
+def test_retry_policy_rejects_invalid_backoff() -> None:
+    """RetryPolicy requires finite non-negative numeric backoff."""
+    backoff: Any = "soon"
+    with pytest.raises(TypeError, match="backoff must be a number"):
+        RetryPolicy(backoff=backoff)
+    with pytest.raises(ValueError, match="finite non-negative"):
+        RetryPolicy(backoff=-0.1)
+    with pytest.raises(ValueError, match="finite non-negative"):
+        RetryPolicy(backoff=float("nan"))
+
+
+def test_execute_retry_policy_recovers_after_handler_failure() -> None:
+    """A retry policy re-runs a failed single task until it succeeds."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    attempts = 0
+
+    def handler(context: TaskContext) -> str:
+        """Fail once and then recover."""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("boom")
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    result = executor.execute(task, retry_policy=RetryPolicy(max_attempts=2))
+
+    assert attempts == 2
+    assert result.status == TaskStatus.SUCCEEDED
+    assert result.output == "ok"
+    assert [event.type for event in events] == [
+        TaskEventType.STARTED,
+        TaskEventType.FAILED,
+        TaskEventType.STARTED,
+        TaskEventType.SUCCEEDED,
+    ]
+    started_events = [event for event in events if event.type is TaskEventType.STARTED]
+    assert [event.previous_status for event in started_events] == [
+        TaskStatus.PENDING,
+        TaskStatus.FAILED,
+    ]
+
+
+def test_execute_retry_policy_exhaustion_reraises_final_error() -> None:
+    """Exhausted retries leave the final failed attempt on the task."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    attempts = 0
+
+    def handler(context: TaskContext) -> None:
+        """Fail every attempt with an attempt-specific message."""
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError(f"boom {attempts}")
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(RuntimeError, match="boom 3"):
+        executor.execute(task, retry_policy=RetryPolicy(max_attempts=3))
+
+    assert attempts == 3
+    assert task.status == TaskStatus.FAILED
+    assert task.result is not None
+    assert task.result.error == "boom 3"
+    assert len([event for event in events if event.type is TaskEventType.FAILED]) == 3
+
+
+def test_execute_retry_policy_does_not_retry_cancellation() -> None:
+    """Cancellation remains terminal and is never retried."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    attempts = 0
+
+    def handler(context: TaskContext) -> None:
+        """Cancel immediately."""
+        nonlocal attempts
+        attempts += 1
+        raise TaskCancelled("stop")
+
+    executor.register(TaskType.BASH, handler)
+
+    with pytest.raises(TaskCancelled, match="stop"):
+        executor.execute(task, retry_policy=RetryPolicy(max_attempts=3))
+
+    assert attempts == 1
+    assert task.status == TaskStatus.CANCELLED
+
+
+def test_execute_retry_policy_applies_backoff_between_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backoff sleeps between failed attempts and observes cancellation."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(context: TaskContext) -> str:
+        """Fail once and then recover."""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("boom")
+        return "ok"
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    executor.register(TaskType.BASH, handler)
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    result = executor.execute(
+        task,
+        retry_policy=RetryPolicy(max_attempts=2, backoff=0.25),
+    )
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert sleeps == [0.25]
+
+
+def test_execute_retry_policy_honors_cancellation_during_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling during backoff produces cancellation instead of another retry."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    attempts = 0
+
+    def handler(context: TaskContext) -> None:
+        """Fail the first attempt."""
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("boom")
+
+    def fake_sleep(seconds: float) -> None:
+        assert seconds == 0.25
+        executor.cancel(task)
+
+    executor.register(TaskType.BASH, handler)
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+
+    with pytest.raises(TaskCancelled, match="was cancelled"):
+        executor.execute(
+            task,
+            retry_policy=RetryPolicy(max_attempts=2, backoff=0.25),
+        )
+
+    assert attempts == 1
+    assert task.status == TaskStatus.CANCELLED
+
+
+def test_execute_retry_policy_honors_zero_backoff_cancellation() -> None:
+    """Cancellation between immediate retry attempts is still observed."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    attempts = 0
+
+    def handler(context: TaskContext) -> None:
+        """Fail the first attempt."""
+        nonlocal attempts
+        attempts += 1
+        raise RuntimeError("boom")
+
+    def cancel_after_failure(event: TaskEvent) -> None:
+        if event.type is TaskEventType.FAILED:
+            executor.cancel(task)
+
+    executor.register(TaskType.BASH, handler)
+    executor.events.subscribe(cancel_after_failure)
+
+    with pytest.raises(TaskCancelled, match="was cancelled"):
+        executor.execute(task, retry_policy=RetryPolicy(max_attempts=2))
+
+    assert attempts == 1
+    assert task.status == TaskStatus.CANCELLED
+
+
+def test_execute_retry_policy_does_not_retry_missing_handler() -> None:
+    """Missing handler configuration errors are terminalized once."""
+    executor = TaskExecutor.empty()
+    task = Task.bash("", title="Example")
+    events: list[TaskEvent] = []
+    executor.events.subscribe(events.append)
+
+    with pytest.raises(ValueError, match="No handler registered"):
+        executor.execute(task, retry_policy=RetryPolicy(max_attempts=3))
+
+    assert [event.type for event in events] == [TaskEventType.FAILED]
+
+
+def test_submit_accepts_retry_policy() -> None:
+    """Submitted tasks use the provided retry policy."""
+    executor = TaskExecutor()
+    task = Task.bash("", title="Example")
+    attempts = 0
+
+    def handler(context: TaskContext) -> str:
+        """Fail once and then recover."""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("boom")
+        return "ok"
+
+    executor.register(TaskType.BASH, handler)
+
+    future = executor.submit(task, retry_policy=RetryPolicy(max_attempts=2))
+    result = future.result(timeout=1)
+    executor.shutdown()
+
+    assert attempts == 2
+    assert result.status == TaskStatus.SUCCEEDED
 
 
 def test_execute_passes_upstream_task_refs_to_handler() -> None:
