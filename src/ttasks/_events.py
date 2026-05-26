@@ -16,6 +16,7 @@ class TaskEventType(Enum):
     """Kinds of task events emitted during execution."""
 
     STARTED = "started"
+    PROGRESS = "progress"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -34,6 +35,8 @@ class TaskEvent:
     previous_status: TaskStatus | None
     status: TaskStatus
     error: str | None = None
+    progress_percent: float | None = None
+    progress_message: str | None = None
 
 
 TaskEventHandler = Callable[[TaskEvent], None]
