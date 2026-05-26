@@ -309,6 +309,9 @@ def test_transition_zoo() -> None:
     assert {tk.id for tk in graph.succeeded} == expected_done_ids
     assert {tk.id for tk in graph.failed} == expected_failed_ids
     assert {tk.id for tk in graph.blocked} == expected_blocked_ids
+    assert graph.optional_failed == [t["F2"]]
+    assert graph.required_failed == [t["B"], t["L"]]
+    assert graph.required_blocked == [t["J"], t["Q"], t["S"]]
 
     # 4. Blocked tasks never STARTED and have no result.
     started_ids = {ev.task_id for ev in events if ev.type is TaskEventType.STARTED}
