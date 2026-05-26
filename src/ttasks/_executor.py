@@ -522,6 +522,7 @@ class TaskExecutor:
         ``retry_policy`` retries failed attempts for this single task only.
         Cancellation is never retried.
         """
+        self._validate_task(task)
         policy = self._resolve_retry_policy(retry_policy)
         if policy.max_attempts == 1 or self._handlers.get(task.type) is None:
             return self._execute_once(task, upstream)

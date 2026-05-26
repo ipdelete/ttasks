@@ -366,6 +366,15 @@ def test_execute_rejects_invalid_retry_policy() -> None:
         executor.execute(Task.bash("", title="Example"), retry_policy=bad_policy)
 
 
+def test_execute_rejects_non_task() -> None:
+    """execute() rejects malformed task objects before accessing internals."""
+    executor = TaskExecutor()
+    not_task: Any = object()
+
+    with pytest.raises(TypeError, match="task must be a Task"):
+        executor.execute(not_task)
+
+
 def test_submit_rejects_invalid_retry_policy_synchronously() -> None:
     """submit() rejects malformed retry_policy values before queueing work."""
     executor = TaskExecutor()
